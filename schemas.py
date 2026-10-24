@@ -21,6 +21,7 @@ class LoginRequest(BaseModel):
 class ArticleCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     content: str = Field(..., min_length=1)
+    is_public: bool = False
 
 class ArticleResponse(BaseModel):
     id: int
@@ -41,8 +42,9 @@ class ArticleResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class ArticleUpdate(BaseModel):
-    title: str = Field(..., min_length=1, max_length=200)
-    content: str = Field(..., min_length=1)
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    content: str | None = Field(default=None, min_length=1)
+    is_public: bool | None = None
 
 class ArticleListResponse(BaseModel):
     items: list[ArticleResponse]

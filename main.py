@@ -1,6 +1,6 @@
-
+from routers import ai
 import time
-
+from rag.data_loader import load_articles_to_vector_store
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -18,12 +18,57 @@ from exceptions import (
     bad_request_exception_handler,
     unauthorized_exception_handler,
 )
-
+from routers.admin import router as admin_router
+import asyncio
+import logging
+from contextlib import asynccontextmanager
 from logger import logger
+from database import SessionLocal
+from rag.cleanup_tasks import process_pending_cleanup_tasks
+
+logger = logging.getLogger(__name__)
 
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("\n🚀 FastAPI 正在启动，正在初始化 RAG 知识库...")
+    await asyncio.to_thread(load_articles_to_vector_store)
+    print("✅ RAG 知识库初始化完成！\n")
 
+    async def cleanup_worker():
+        while True:
+            logger.info("向量清理后台任务开始执行")
+
+            try:
+                count = await asyncio.to_thread(
+                    process_pending_cleanup_tasks,
+                    SessionLocal,
+                )
+                if count:
+                    logger.info(
+                        "本轮处理了 %s 个向量清理任务",
+                        count,
+                    )
+            except Exception:
+                logger.exception("向量清理定时任务发生异常")
+
+            await asyncio.sleep(60)
+    worker = asyncio.create_task(cleanup_worker())
+
+    try:
+        yield
+    finally:
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+
+
+
+app = FastAPI(lifespan=lifespan)
+app.include_router(ai.router, prefix="/ai", tags=["AI"])
+app.include_router(admin_router)
 
 # 注册自定义异常处理器：每种异常只注册一次
 app.add_exception_handler(

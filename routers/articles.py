@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-
+from rag.data_loader import text_splitter
+from rag.vector_store import vector_store
 from database import get_db
-
+from models import Article, VectorCleanupTask
 from schemas import (
     ArticleCreate,
     ArticleUpdate,
@@ -222,19 +223,36 @@ def unlike_article(
 @router.post("/articles", response_model=ArticleAPIResponse)
 def create_article(
     article: ArticleCreate,
-    db=Depends(get_db),
-    current_user=Depends(get_current_user)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     try:
         new_article = create_article_service(
             db=db,
             title=article.title,
             content=article.content,
-            user_id=current_user["user_id"]
+            user_id=current_user["user_id"],
+            is_public=article.is_public
         )
     except Exception as e:
         logger.error(f"创建文章失败: {e}")
         raise
+
+    # 【新增代码】：文章写入数据库成功后，自动同步到 RAG 知识库
+    try:
+        full_text = f"{new_article.title}\n{new_article.content}"
+        chunks = text_splitter.split_text(full_text)
+        if chunks:
+            vector_store.update_article(
+                chunks,
+                article_id=new_article.id,
+                user_id=new_article.user_id,
+                is_public=new_article.is_public
+            )
+            logger.info(f"✅ 新文章 [{new_article.title}] 已自动同步到 RAG 知识库！")
+    except Exception as e:
+        # 即使 RAG 同步失败，也不影响文章的正常创建和返回
+        logger.warning(f"⚠️ 文章已创建，但同步到 RAG 失败: {e}")
 
     logger.info(
         f"用户创建文章: user_id={current_user['user_id']}, "
@@ -354,8 +372,31 @@ def update_article(
         article_id=article_id,
         title=article_data.title,
         content=article_data.content,
-        user_id=current_user["user_id"]
+        user_id=current_user["user_id"],
+        is_public=article_data.is_public
     )
+
+    # 【修复】：将 updated_article 改为 article，与上面的返回值变量名保持一致
+    try:
+        full_text = f"{article['title']}\n{article['content']}"
+        chunks = text_splitter.split_text(full_text)
+
+        vector_store.update_article(
+            chunks,
+            article_id=article["id"],
+            user_id=article["user_id"],
+            is_public=article_data.is_public
+            if article_data.is_public is not None
+            else db.query(Article).filter(
+                Article.id == article_id
+            ).first().is_public
+        )
+
+        logger.info(
+            f"✅ 文章 [ID: {article['id']}] 已同步更新到 RAG 知识库。"
+        )
+    except Exception as e:
+        logger.warning(f"⚠️ 文章已更新，但同步 RAG 失败: {e}")
 
     logger.info(
         f"用户修改文章: user_id={current_user['user_id']}, "
@@ -370,28 +411,34 @@ def update_article(
 
 
 # 删除文章
+
 @router.delete("/articles/{article_id}", response_model=APIResponse)
 def delete_article(
     article_id: int,
     db=Depends(get_db),
-    current_user=Depends(get_current_user)
+    current_user=Depends(get_current_user),
 ):
-    article = delete_article_service(
+    # 1. 调用服务层删除文章
+    delete_article_service(
         db=db,
         article_id=article_id,
-        user_id=current_user["user_id"]
+        user_id=current_user["user_id"],
     )
 
+    # 2. 记录用户操作
     logger.info(
-        f"用户删除文章: user_id={current_user['user_id']}, "
-        f"article_id={article.id}"
+        "用户删除文章：user_id=%s, article_id=%s",
+        current_user["user_id"],
+        article_id,
     )
 
+    # 3. 返回响应
     return {
         "code": 200,
         "message": "Article deleted successfully",
-        "data": None
+        "data": None,
     }
+
 
 @router.get("/my_articles", response_model=ArticleListAPIResponse)
 def get_my_articles(
@@ -460,6 +507,7 @@ def admin_delete_article(
 
 
 
+
 @router.post(
     "/admin/articles/{article_id}/restore",
     response_model=APIResponse
@@ -469,16 +517,37 @@ def restore_article(
     db=Depends(get_db),
     current_user=Depends(get_admin_user)
 ):
-    restore_article_service(
+    article = restore_article_service(
         db,
         article_id
     )
+
+    try:
+        from rag.text_splitter import text_splitter
+
+        chunks = text_splitter.split_text(article.content)
+
+        vector_store.update_article(
+            chunks,
+            article_id=article.id,
+            user_id=article.user_id,
+            is_public=article.is_public
+        )
+
+        logger.info(
+            f"文章 [ID: {article.id}] 已重新同步到 RAG 知识库。"
+        )
+    except Exception as e:
+        logger.warning(
+            f"文章已恢复，但同步 RAG 失败: {e}"
+        )
 
     return {
         "code": 200,
         "message": "Article restored successfully",
         "data": None
     }
+
 
 
 

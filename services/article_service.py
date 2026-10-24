@@ -11,6 +11,11 @@ import json
 from datetime import datetime
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.dialects.mysql import insert as mysql_insert
+from rag.vector_store import vector_store
+import logging
+from rag.cleanup_tasks import create_cleanup_task
+
+logger = logging.getLogger(__name__)
 
 def build_article_data(
     article,
@@ -112,16 +117,19 @@ def get_articles_service(
         "total": total
     }
 
+
 def create_article_service(
     db: Session,
     title: str,
     content: str,
-    user_id: int
+    user_id: int,
+    is_public: bool = False
 ):
     new_article = Article(
         title=title,
         content=content,
-        user_id=user_id
+        user_id=user_id,
+        is_public=is_public
     )
 
     try:
@@ -134,12 +142,14 @@ def create_article_service(
 
     return new_article
 
+
 def update_article_service(
     db: Session,
     article_id: int,
     title: str,
     content: str,
-    user_id: int
+    user_id: int,
+    is_public: bool | None = None
 ):
     article = db.query(Article).filter(
         Article.id == article_id,
@@ -152,8 +162,14 @@ def update_article_service(
     if article.user_id != user_id:
         raise PermissionDeniedError()
 
-    article.title = title
-    article.content = content
+    if title is not None:
+        article.title = title
+
+    if content is not None:
+        article.content = content
+
+    if is_public is not None:
+        article.is_public = is_public
 
     try:
         db.commit()
@@ -213,6 +229,42 @@ def delete_article_service(
         )
     except Exception:
         pass
+
+        # 尝试清理文章向量，最多重试 2 次
+    vector_deleted = False
+    last_error = None
+
+    for attempt in range(2):
+        try:
+            vector_store.delete_by_article_id(article_id)
+            vector_deleted = True
+            break
+        except Exception as e:
+            last_error = str(e)
+
+            logger.exception(
+                "文章向量清理失败，第 %s 次尝试，article_id=%s",
+                attempt + 1,
+                article_id,
+            )
+
+    # 两次清理都失败，创建补偿任务，交给后台 worker 重试
+    if not vector_deleted:
+        try:
+            create_cleanup_task(
+                db=db,
+                article_id=article_id,
+                error_message=(
+                    f"向量清理连续两次失败。"
+                    f"最后一次错误：{last_error}"
+                ),
+            )
+        except Exception:
+            logger.exception(
+                "保存向量清理任务失败，article_id=%s",
+                article_id,
+            )
+
 
     return article
 
