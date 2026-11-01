@@ -88,7 +88,7 @@ def test_pending_sync_task_retries_after_failure(test_db, monkeypatch):
 
     db.refresh(task)
 
-    assert processed == 1
+    assert processed == 0
     assert task.status == "pending"
     assert task.retry_count == 1
     assert "模拟向量同步失败" in task.last_error

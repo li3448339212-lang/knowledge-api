@@ -253,6 +253,36 @@ def retry_vector_sync_task(db: Session, task_id: int) -> bool:
         )
 
         if task is None:
+            db.rollback()
+
+            # 释放当前任务的租约，避免任务一直处于 processing
+            released = (
+                db.query(VectorSyncTask)
+                .filter(
+                    VectorSyncTask.id == task_id,
+                    VectorSyncTask.status == "processing",
+                    VectorSyncTask.lease_token == lease_token,
+                )
+                .update(
+                    {
+                        VectorSyncTask.status: "pending",
+                        VectorSyncTask.locked_at: None,
+                        VectorSyncTask.lease_token: None,
+                        VectorSyncTask.updated_at: func.now(),
+                    },
+                    synchronize_session=False,
+                )
+            )
+
+            db.commit()
+
+            logger.warning(
+                "向量同步任务领取后读取失败，已尝试释放租约，"
+                "task_id=%s, released=%s",
+                task_id,
+                released,
+            )
+
             return False
 
         article_id = task.article_id
@@ -581,8 +611,15 @@ def process_pending_sync_tasks(
         processed = 0
 
         for task_id in task_ids:
-            retry_vector_sync_task(db, task_id)
-            processed += 1
+            success = retry_vector_sync_task(db, task_id)
+
+            if success:
+                processed += 1
+            else:
+                logger.warning(
+                    "文章向量同步任务未成功完成，task_id=%s",
+                    task_id,
+                )
 
         logger.info(
             "本轮文章向量同步任务处理结束，处理数量：%s",

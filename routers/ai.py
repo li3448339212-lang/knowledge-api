@@ -44,7 +44,7 @@ async def confirm_article(
     current_user: dict = Depends(get_current_user)
 ):
     """用户确认后，才真正创建文章。"""
-
+    print("当前登录用户 ID：", current_user["user_id"])
     result = rag_engine.confirm_article_creation(
         confirmation_id=request.confirmation_id,
         user_id=current_user["user_id"],

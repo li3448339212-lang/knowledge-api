@@ -229,6 +229,7 @@ class ChromaVectorStore:
                 raise cleanup_error
 
 
+    
     def search(
         self,
         query: str,
@@ -236,109 +237,172 @@ class ChromaVectorStore:
         top_k: int = 3
     ) -> list[dict]:
         """
-        混合检索：向量语义检索 + BM25 关键词过滤
+        混合检索：向量语义检索 + BM25 关键词检索 + RRF 排名融合
         """
+        if not query or not query.strip():
+            return []
+
         if self.collection.count() == 0:
             return []
 
         from rag.embedding_client import embedding_client
+        from database import SessionLocal
+        from models import Article
+        from rank_bm25 import BM25Okapi
+        import jieba
 
+        # 1. 生成问题向量
         query_vector = embedding_client.get_embedding(query)
+
         if not query_vector:
             return []
 
-        candidate_results = self.collection.query(
+        # 2. 按用户权限获取向量检索结果
+        permission_filter = {
+            "$or": [
+                {"is_public": True},
+                {"user_id": int(user_id)}
+            ]
+        }
+
+        vector_results = self.collection.query(
             query_embeddings=[query_vector],
-            n_results=min(top_k * 3, self.collection.count()),
-            where={
-                "$or": [
-                    {"is_public": True},
-                    {"user_id": int(user_id)}
-                ]
-            },
+            n_results=min(top_k * 10, self.collection.count()),
+            where=permission_filter,
             include=["documents", "metadatas"]
         )
 
-        if not candidate_results or not candidate_results.get("documents"):
-            return []
+        vector_documents = vector_results["documents"][0] or []
+        vector_metadatas = vector_results["metadatas"][0] or []
+        vector_ids = vector_results["ids"][0] or []
 
-        candidates = []
-        doc_texts = []
+        # 3. 获取有权限的全部文本块，供 BM25 检索
+        all_results = self.collection.get(
+            where=permission_filter,
+            include=["documents", "metadatas"]
+        )
 
-        from database import SessionLocal
-        from models import Article
+        all_documents = all_results["documents"] or []
+        all_metadatas = all_results["metadatas"] or []
+        all_ids = all_results["ids"] or []
 
+        # 4. 检查文章是否存在、是否删除、用户是否有权限
         db = SessionLocal()
 
         try:
-            documents = candidate_results["documents"][0] or []
-            metadatas = candidate_results["metadatas"][0] or []
+            valid_candidates = {}
+            article_cache = {}
 
-            for i, text in enumerate(documents):
+            for item_id, text, metadata in zip(
+                all_ids,
+                all_documents,
+                all_metadatas
+            ):
                 if not text:
                     continue
 
-                meta = metadatas[i] or {}
-                article_id = meta.get("article_id")
+                metadata = metadata or {}
+                article_id = metadata.get("article_id")
 
                 if article_id is None:
                     continue
 
-                article = db.query(Article).filter(
-                    Article.id == article_id,
-                    Article.is_deleted == False
-                ).first()
+                if article_id not in article_cache:
+                    article_cache[article_id] = db.query(Article).filter(
+                        Article.id == article_id,
+                        Article.is_deleted == False
+                    ).first()
+
+                article = article_cache[article_id]
 
                 if article is None:
                     continue
 
-                # 二次权限检查
-                # 公开文章允许其他用户检索
-                # 私有文章只能由文章所有者检索
-                is_public = meta.get("is_public", False)
+                is_public = metadata.get("is_public", False)
 
-                if not is_public and article.user_id != user_id:
+                if not is_public and article.user_id != int(user_id):
                     continue
 
-                candidates.append({
+                valid_candidates[item_id] = {
                     "text": text,
                     "article_id": article_id
-                })
-
-                doc_texts.append(text)
+                }
 
         finally:
             db.close()
 
-        if not candidates:
+        if not valid_candidates:
             return []
 
-        from rank_bm25 import BM25Okapi
-        import jieba
+        # 5. 建立向量检索排名
+        vector_ranks = {}
+
+        rank = 0
+
+        for item_id in vector_ids:
+            if item_id in valid_candidates and item_id not in vector_ranks:
+                rank += 1
+                vector_ranks[item_id] = rank
+
+        # 6. 使用 jieba 中文分词，执行 BM25 检索
+        candidate_ids = list(valid_candidates.keys())
 
         tokenized_query = list(jieba.cut_for_search(query))
 
         tokenized_docs = [
-            list(jieba.cut_for_search(doc))
-            for doc in doc_texts
+            list(jieba.cut_for_search(valid_candidates[item_id]["text"]))
+            for item_id in candidate_ids
         ]
 
         bm25 = BM25Okapi(tokenized_docs)
-        scores = bm25.get_scores(tokenized_query)
+        bm25_scores = bm25.get_scores(tokenized_query)
 
-        scored_candidates = []
+        bm25_ranks = {}
 
-        for i, score in enumerate(scores):
-            if score > 0:
-                candidates[i]["bm25_score"] = float(score)
-                scored_candidates.append(candidates[i])
-
-        scored_candidates.sort(
-            key=lambda item: item["bm25_score"],
+        ranked_bm25 = sorted(
+            zip(candidate_ids, bm25_scores),
+            key=lambda item: item[1],
             reverse=True
         )
 
-        print("BM25 排序后的候选结果：", scored_candidates)
+        rank = 0
+
+        for item_id, score in ranked_bm25:
+            if score > 0:
+                rank += 1
+                bm25_ranks[item_id] = rank
+
+        # 7. 使用 RRF 融合两种检索排名
+        rrf_k = 60
+        scored_candidates = []
+
+        for item_id, candidate in valid_candidates.items():
+            rrf_score = 0.0
+
+            if item_id in vector_ranks:
+                rrf_score += 1 / (rrf_k + vector_ranks[item_id])
+
+            if item_id in bm25_ranks:
+                rrf_score += 1 / (rrf_k + bm25_ranks[item_id])
+
+            if rrf_score > 0:
+                scored_candidates.append({
+                    **candidate,
+                    "rrf_score": rrf_score
+                })
+
+        # 8. 按融合分数从高到低排序
+        scored_candidates.sort(
+            key=lambda item: item["rrf_score"],
+            reverse=True
+        )
+
+        logger.info(
+            "RRF 混合检索完成，user_id=%s，候选数量=%s，返回数量=%s",
+            user_id,
+            len(scored_candidates),
+            min(top_k, len(scored_candidates))
+        )
 
         return scored_candidates[:top_k]
 
