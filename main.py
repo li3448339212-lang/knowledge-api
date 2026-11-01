@@ -24,7 +24,10 @@ import logging
 from contextlib import asynccontextmanager
 from logger import logger
 from database import SessionLocal
-from rag.cleanup_tasks import process_pending_cleanup_tasks
+from rag.cleanup_tasks import (
+    process_pending_cleanup_tasks,
+    process_pending_sync_tasks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +54,20 @@ async def lifespan(app: FastAPI):
                     )
             except Exception:
                 logger.exception("向量清理定时任务发生异常")
+            # 处理文章向量同步任务
+            try:
+                sync_count = await asyncio.to_thread(
+                    process_pending_sync_tasks,
+                    SessionLocal,
+                )
+                if sync_count:
+                    logger.info(
+                        "本轮处理了 %s 个文章向量同步任务",
+                        sync_count,
+                    )
+            except Exception:
+                logger.exception("文章向量同步定时任务发生异常")
+
 
             await asyncio.sleep(60)
     worker = asyncio.create_task(cleanup_worker())
@@ -58,12 +75,14 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        logger.info("正在关闭向量清理后台 Worker")
+
         worker.cancel()
         try:
+
             await worker
         except asyncio.CancelledError:
-            pass
-
+            logger.info("向量清理后台 Worker 已停止")
 
 
 app = FastAPI(lifespan=lifespan)

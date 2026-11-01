@@ -2,7 +2,10 @@ from rag.vector_store import vector_store
 from collections import defaultdict
 from uuid import uuid4
 import time
+import logging
+import threading
 
+logger = logging.getLogger(__name__)
 
 
 def is_explicit_create_request(question: str) -> bool:
@@ -52,7 +55,6 @@ def is_explicit_create_request(question: str) -> bool:
     return any(word in question for word in create_words)
 
 
-
 class RAGEngine:
     """
     RAG 引擎核心类
@@ -60,12 +62,74 @@ class RAGEngine:
     """
 
     def __init__(self):
+        # 保护共享内存数据的线程锁
+        self._state_lock = threading.RLock()
+        self._confirming_ids = set()
+        
         # 内存中的对话历史缓存
         self.chat_history = defaultdict(list)
 
+        # 记录每个会话最后活跃的时间
+        self.chat_history_last_active = {}
+
         # 暂存等待用户确认的文章创建请求
         self.pending_article_confirmations = {}
+
         print("RAG 引擎初始化完成，已连接 ChromaDB 知识库，并开启多轮对话记忆。")
+
+    def cleanup_expired_sessions(self):
+        """清理超过 1 小时没有活动的对话会话。"""
+
+        current_time = time.time()
+        expire_seconds = 3600
+
+        with self._state_lock:
+            expired_sessions = [
+                session_id
+                for session_id, last_active
+                in self.chat_history_last_active.items()
+                if current_time - last_active > expire_seconds
+            ]
+
+            for session_id in expired_sessions:
+                self.chat_history.pop(session_id, None)
+                self.chat_history_last_active.pop(session_id, None)
+
+        if expired_sessions:
+            logger.info(
+                "已清理 %s 个过期对话会话",
+                len(expired_sessions),
+            )
+
+    def cleanup_expired_confirmations(self):
+        """清理超过 10 分钟的待确认文章请求。"""
+
+        current_time = time.time()
+        expire_seconds = 600
+        removed_ids = []
+
+        with self._state_lock:
+            expired_ids = [
+                confirmation_id
+                for confirmation_id, pending
+                in self.pending_article_confirmations.items()
+                if current_time - pending["created_at"] > expire_seconds
+            ]
+
+            for confirmation_id in expired_ids:
+                # 正在创建文章的请求暂时不清理
+                if confirmation_id not in self._confirming_ids:
+                    self.pending_article_confirmations.pop(
+                        confirmation_id,
+                        None,
+                    )
+                    removed_ids.append(confirmation_id)
+
+        if removed_ids:
+            logger.info(
+                "已清理 %s 个过期的文章确认请求",
+                len(removed_ids),
+            )
 
     def create_pending_confirmation(
         self,
@@ -85,6 +149,7 @@ class RAGEngine:
 
         return confirmation_id
 
+    
     def confirm_article_creation(
         self,
         confirmation_id: str,
@@ -95,34 +160,71 @@ class RAGEngine:
         if not confirmation_id or user_id is None:
             return "确认失败：确认编号或用户身份无效。"
 
-        pending = self.pending_article_confirmations.get(confirmation_id)
+        # 先清理其他过期请求，再验证当前请求
+        self.cleanup_expired_confirmations()
 
-        if pending is None:
-            return "确认失败：请求不存在、已过期或已经使用。"
+        # 验证请求并抢占处理权
+        with self._state_lock:
+            pending = self.pending_article_confirmations.get(confirmation_id)
 
-        # 只能由发起请求的用户确认
-        if pending["user_id"] != user_id:
-            return "确认失败：你无权确认此请求。"
+            if pending is None:
+                return "确认失败：请求不存在、已过期或已经使用。"
 
-        # 请求超过 10 分钟后失效
-        if time.time() - pending["created_at"] > 600:
-            self.pending_article_confirmations.pop(confirmation_id, None)
-            return "确认失败：请求已过期，请重新发起。"
+            # 只能由发起请求的用户确认
+            if pending["user_id"] != user_id:
+                return "确认失败：你无权确认此请求。"
 
-        # 执行前先删除待确认记录，防止同一编号被重复使用
-        self.pending_article_confirmations.pop(confirmation_id, None)
+            # 请求超过 10 分钟后失效
+            if time.time() - pending["created_at"] > 600:
+                self.pending_article_confirmations.pop(confirmation_id, None)
+                return "确认失败：请求已过期，请重新发起。"
 
-        return self.execute_tool(
-            "create_article",
-            {
-                "title": pending["title"],
-                "content": pending["content"],
-            },
-            user_id=user_id,
-        )
+            # 防止同一个请求被重复处理
+            if confirmation_id in self._confirming_ids:
+                return "确认失败：该请求正在处理中，请勿重复确认。"
+
+            self._confirming_ids.add(confirmation_id)
+
+        try:
+            try:
+                result = self.execute_tool(
+                    "create_article",
+                    {
+                        "title": pending["title"],
+                        "content": pending["content"],
+                    },
+                    user_id=user_id,
+                )
+
+            except Exception:
+                logger.exception(
+                    "确认创建文章失败，confirmation_id=%s，user_id=%s",
+                    confirmation_id,
+                    user_id,
+                )
+
+                return "创建文章失败：保存文章时发生错误，请稍后重试。"
+
+            # execute_tool 可能捕获数据库异常并返回错误字符串
+            if isinstance(result, str) and result.startswith("创建文章失败："):
+                return result
+
+            # 创建成功后删除待确认记录
+            with self._state_lock:
+                self.pending_article_confirmations.pop(
+                    confirmation_id,
+                    None,
+                )
+
+            return result
+
+        finally:
+            # 无论成功还是失败，都释放处理标记
+            with self._state_lock:
+                self._confirming_ids.discard(confirmation_id)
 
     def get_tools(self) -> list[dict]:
-        """定义 AI 可以使用的工具（Function Calling）"""
+        """定义 AI 可以使用的工具（Function Calling）。"""
         return [
             {
                 "name": "create_article",
@@ -132,23 +234,30 @@ class RAGEngine:
                     "properties": {
                         "title": {
                             "type": "string",
-                            "description": "文章的标题"
+                            "description": "文章的标题",
                         },
                         "content": {
                             "type": "string",
-                            "description": "文章的正文内容"
-                        }
+                            "description": "文章的正文内容",
+                        },
                     },
-                    "required": ["title", "content"]
-                }
+                    "required": ["title", "content"],
+                },
             }
         ]
 
-    def execute_tool(self, tool_name: str, tool_args: dict, user_id: int = None) -> str:
-        """执行具体的工具操作"""
+    def execute_tool(
+        self,
+        tool_name: str,
+        tool_args: dict,
+        user_id: int = None,
+    ) -> str:
+        """执行具体的工具操作。"""
+
         if tool_name == "create_article":
             if user_id is None:
                 return "创建文章失败：无法确认当前用户身份，请先登录。"
+
             title = tool_args.get("title")
             content = tool_args.get("content")
 
@@ -160,14 +269,17 @@ class RAGEngine:
 
             if not isinstance(content, str) or not content.strip():
                 return "创建文章失败：文章内容不能为空。"
+
             from database import SessionLocal
             from models import Article
+
             db = SessionLocal()
+
             try:
                 new_article = Article(
-                    title=tool_args["title"],
-                    content=tool_args["content"],
-                    user_id=user_id
+                    title=title.strip(),
+                    content=content.strip(),
+                    user_id=user_id,
                 )
 
                 db.add(new_article)
@@ -179,53 +291,89 @@ class RAGEngine:
                     from rag.text_splitter import text_splitter
 
                     chunks = text_splitter.split_text(new_article.content)
+
                     vector_store.update_article(
                         chunks,
                         article_id=new_article.id,
                         user_id=new_article.user_id,
-                        is_public=new_article.is_public
-                    )
-                except Exception as e:
-                    print(
-                        f"警告：文章 ID {new_article.id} 已保存到 MySQL，"
-                        f"但同步 ChromaDB 失败：{e}"
-                    )
-                    return (
-                        f"文章《{new_article.title}》已创建，"
-                        f"ID 为 {new_article.id}，但知识库同步失败。"
+                        is_public=new_article.is_public,
                     )
 
-                return (
-                    f"文章《{new_article.title}》已成功创建，"
-                    f"ID 为 {new_article.id}，并已同步至知识库！"
-                )
+                except Exception as e:
+                    logger.exception(
+                        "文章已保存到 MySQL，但同步 ChromaDB 失败，article_id=%s",
+                        new_article.id,
+                    )
+
+                    # 保存向量同步任务，交给后台 Worker 自动重试
+                    try:
+                        from rag.cleanup_tasks import create_vector_sync_task
+
+                        create_vector_sync_task(
+                            db,
+                            new_article.id,
+                            str(e),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "文章已创建，但保存向量同步任务失败，article_id=%s",
+                            new_article.id,
+                        )
+
+                    return (
+                        f"文章《{new_article.title}》已成功创建，"
+                        f"ID 为 {new_article.id}，并已同步至知识库！"
+                    )
 
             except Exception as e:
                 db.rollback()
+                logger.exception(
+                    "创建文章失败，user_id=%s",
+                    user_id,
+                )
                 return f"创建文章失败：{str(e)}"
+
             finally:
                 db.close()
+
         return "未知的工具名称"
 
-    def ask(self, question: str, session_id: str = "default", user_id: int = None) -> dict:
+    def ask(
+        self,
+        question: str,
+        session_id: str = "default",
+        user_id: int = None,
+    ) -> dict:
         """
-        核心问答方法：检索 + 记忆 + 生成 + 代码级精准来源过滤 + 工具调用
+        核心问答方法：检索、记忆、生成、来源过滤以及工具调用。
         """
+
         print(f"\n正在处理问题 (Session: {session_id}): {question}")
 
-        # 1. 检索
+        # 1. 检查用户身份
         if user_id is None:
             return {
                 "answer": "请先登录后再使用知识库检索。",
-                "sources": []
+                "sources": [],
             }
 
-
+        # 2. 检索知识库
         search_results = vector_store.search(
             question,
-            user_id=user_id
+            user_id=user_id,
         )
+
         session_id = f"{user_id}:{session_id}"
+
+        # 清理超过 1 小时没有活动的会话
+        self.cleanup_expired_sessions()
+
+        # 更新当前会话的最后活动时间
+        with self._state_lock:
+            self.chat_history_last_active[session_id] = time.time()
+
+        # 清理超过 10 分钟的待确认文章请求
+        self.cleanup_expired_confirmations()
 
         # 没有检索结果时，普通问答直接返回；
         # 明确要求创建文章时，继续调用大模型生成待确认请求。
@@ -233,67 +381,88 @@ class RAGEngine:
             if not is_explicit_create_request(question):
                 return {
                     "answer": "抱歉，当前知识库中没有找到相关信息。",
-                    "sources": []
+                    "sources": [],
                 }
 
             search_results = []
 
-
-        # 2. 组装上下文 & 收集来源
+        # 3. 组装上下文并收集来源
         context_parts = []
         valid_sources = []
         seen_ids = set()
 
         for result in search_results:
             text = result.get("text", "").strip()
+
             if len(text) < 10:
                 continue
 
             context_parts.append(text)
-            aid = result.get("article_id")
-            if aid and aid not in seen_ids:
-                seen_ids.add(aid)
-                valid_sources.append(aid)
+
+            article_id = result.get("article_id")
+
+            if article_id and article_id not in seen_ids:
+                seen_ids.add(article_id)
+                valid_sources.append(article_id)
 
         if not context_parts:
             if not is_explicit_create_request(question):
                 return {
                     "answer": "抱歉，当前知识库中没有找到相关信息。",
-                    "sources": []
+                    "sources": [],
                 }
 
         context = "\n\n".join(context_parts)
 
-        # 3. 从数据库查出文章标题
+        # 4. 从数据库查出文章标题
         source_details = []
+
         if valid_sources:
             from database import SessionLocal
             from models import Article
+
             db = SessionLocal()
+
             try:
+                from sqlalchemy import or_
+
                 articles = db.query(Article).filter(
                     Article.id.in_(valid_sources),
-                    Article.is_deleted == False
+                    Article.is_deleted == False,
+                    or_(
+                        Article.is_public == True,
+                        Article.user_id == user_id
+                    )
                 ).all()
-                for art in articles:
-                    source_details.append({
-                        "article_id": art.id,
-                        "title": art.title,
-                        "url": f"/articles/{art.id}"
-                    })
+
+                for article in articles:
+                    source_details.append(
+                        {
+                            "article_id": article.id,
+                            "title": article.title,
+                            "url": f"/articles/{article.id}",
+                        }
+                    )
+
             finally:
                 db.close()
 
-        # 4. 格式化历史对话
+        # 5. 格式化历史对话
         history_text = ""
-        if self.chat_history[session_id]:
+
+        with self._state_lock:
+            history = list(self.chat_history[session_id])
+
+        if history:
             history_lines = []
-            for msg in self.chat_history[session_id]:
+
+            for msg in history:
                 role = "用户" if msg["role"] == "user" else "AI助手"
                 history_lines.append(f"{role}: {msg['content']}")
+
             history_text = "\n".join(history_lines)
 
-        # 5. 构建包含历史记忆的提示词
+        # 6. 构建问答提示词
         prompt = f"""你是一个专业的知识助手。请严格根据以下参考资料和历史对话回答问题。
 
 参考资料：
@@ -310,20 +479,18 @@ class RAGEngine:
 3. 如果参考资料不足以回答问题，请直接回复："知识库中暂无相关信息"。
 4. 直接给出答案，不要提及"根据参考资料"等废话。"""
 
-        # 6. 调用大模型（支持工具调用）
+        # 7. 调用大模型
         from rag.llm_client import ollama_client
         import json
 
-        # 获取当前允许使用的工具定义
         tools = self.get_tools()
 
-        # 先让大模型判断是否需要调用工具
         tools_prompt = f"""你是一个专业的知识库问答助手。请严格遵守以下规则：
-        1. 普通问答仅根据参考资料回答，不使用外部知识。
-        2. 结合历史对话理解用户的最新问题。
-        3. 如果参考资料不足以回答问题，回复："知识库中暂无相关信息"。
-        4. 普通回答直接给出答案，不要提及"根据参考资料"等废话。
-        5. 只有在用户明确要求创建并保存文章时，才可以提出 create_article 工具调用。
+1. 普通问答仅根据参考资料回答，不使用外部知识。
+2. 结合历史对话理解用户的最新问题。
+3. 如果参考资料不足以回答问题，回复："知识库中暂无相关信息"。
+4. 普通回答直接给出答案，不要提及"根据参考资料"等废话。
+5. 只有在用户明确要求创建并保存文章时，才可以提出 create_article 工具调用。
 
 你可以使用以下工具：
 {json.dumps(tools, ensure_ascii=False, indent=2)}
@@ -339,15 +506,32 @@ class RAGEngine:
 7. 不需要调用工具时，直接用中文回答，不要返回 JSON。
 """
 
-        full_prompt = f"{tools_prompt}\n\n参考资料：\n{context}\n\n历史对话：\n{history_text if history_text else '无'}\n\n用户最新问题：{question}"
+        full_prompt = f"""{tools_prompt}
+
+参考资料：
+{context}
+
+历史对话：
+{history_text if history_text else '无'}
+
+用户最新问题：{question}
+
+回答规则：
+1. 回答知识库问题时，优先依据提供的知识库检索内容。
+2. 如果检索内容没有提供回答问题所需的信息，明确告知用户当前知识库中没有找到足够的信息。
+3. 不要把模型自身的常识当作知识库检索结果。
+4. 不要编造文章内容、文章标题或来源。
+5. 如果检索内容只支持部分结论，只回答有依据的部分，并说明信息不足。
+6. 只有在知识库内容能够支持结论时，才将结论表述为来自知识库。
+"""
 
         raw_response = ollama_client.generate(full_prompt)
 
-        # 检查大模型是否返回了工具调用指令
+        # 8. 解析大模型响应
         answer = raw_response
         final_sources = []
         tool_used = False
-
+        pending_confirmation = None
 
         try:
             response_json = json.loads(raw_response)
@@ -382,7 +566,9 @@ class RAGEngine:
 
                         elif not is_explicit_create_request(question):
                             # 用户没有明确要求创建并保存时，拒绝工具调用
-                            answer = "本次请求未明确要求创建文章，因此没有执行创建操作。"
+                            answer = (
+                                "本次请求未明确要求创建文章，因此没有执行创建操作。"
+                            )
 
                         else:
                             print("AI 提出了创建文章请求，等待用户确认。")
@@ -401,6 +587,7 @@ class RAGEngine:
                             )
 
                             tool_used = True
+
                             pending_confirmation = {
                                 "confirmation_id": confirmation_id,
                                 "title": title.strip(),
@@ -411,30 +598,62 @@ class RAGEngine:
             # 大模型返回的不是 JSON，按普通回答处理
             pass
 
+        # 9. 存入对话记忆
+        with self._state_lock:
+            self.chat_history[session_id].append(
+                {
+                    "role": "user",
+                    "content": question,
+                }
+            )
 
-        # 7. 存入记忆
-        self.chat_history[session_id].append({"role": "user", "content": question})
-        self.chat_history[session_id].append({"role": "assistant", "content": answer})
-        self.chat_history[session_id] = self.chat_history[session_id][-10:]
+            self.chat_history[session_id].append(
+                {
+                    "role": "assistant",
+                    "content": answer,
+                }
+            )
 
-        # 8. 代码级精准过滤（仅对非工具调用的回答生效）
-        if "暂无相关信息" not in answer and "抱歉" not in answer and not tool_used:
-            import jieba
-            query_words = [w for w in jieba.cut(question) if len(w) > 1 and w not in ["什么", "怎么", "如何", "哪些", "请问"]]
-            for result in search_results:
-                text = result.get("text", "")
-                aid = result.get("article_id")
-                if query_words and any(word in text for word in query_words):
-                    for s in source_details:
-                        if s["article_id"] == aid and s not in final_sources:
-                            final_sources.append(s)
+        # 最多保留最近 10 条消息
+        with self._state_lock:
+            self.chat_history[session_id] = self.chat_history[session_id][-10:]
 
+        # 10. 根据实际参与上下文的文章筛选来源
+        final_sources = []
+
+        if (
+            "暂无相关信息" not in answer
+            and "抱歉" not in answer
+            and not tool_used
+        ):
+            context_article_ids = {
+                source["article_id"]
+                for source in source_details
+            }
+
+            retrieved_article_ids = {
+                item.get("article_id")
+                for item in search_results
+                if item.get("article_id") is not None
+            }
+
+            matched_article_ids = (
+                context_article_ids & retrieved_article_ids
+            )
+
+            final_sources = [
+                source
+                for source in source_details
+                if source["article_id"] in matched_article_ids
+            ]
+
+        # 11. 组装返回结果
         result = {
             "answer": answer,
-            "sources": final_sources
+            "sources": final_sources,
         }
 
-        if "pending_confirmation" in locals():
+        if pending_confirmation is not None:
             result["pending_confirmation"] = pending_confirmation
 
         return result

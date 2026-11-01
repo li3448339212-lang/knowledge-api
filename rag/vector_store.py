@@ -242,11 +242,11 @@ class ChromaVectorStore:
             return []
 
         from rag.embedding_client import embedding_client
+
         query_vector = embedding_client.get_embedding(query)
         if not query_vector:
             return []
 
-        # 1. 先从 ChromaDB 中多捞一些候选数据（比如 10 条），作为候选池
         candidate_results = self.collection.query(
             query_embeddings=[query_vector],
             n_results=min(top_k * 3, self.collection.count()),
@@ -259,25 +259,31 @@ class ChromaVectorStore:
             include=["documents", "metadatas"]
         )
 
-        if not candidate_results or not candidate_results['documents']:
+        if not candidate_results or not candidate_results.get("documents"):
             return []
 
-        # 2. 构建候选池
         candidates = []
         doc_texts = []
 
-        # 2. 收集候选文章，并过滤已软删除的文章
         from database import SessionLocal
         from models import Article
 
         db = SessionLocal()
+
         try:
-            for i in range(len(candidate_results["documents"][0])):
-                text = candidate_results["documents"][0][i]
-                meta = candidate_results["metadatas"][0][i]
+            documents = candidate_results["documents"][0] or []
+            metadatas = candidate_results["metadatas"][0] or []
+
+            for i, text in enumerate(documents):
+                if not text:
+                    continue
+
+                meta = metadatas[i] or {}
                 article_id = meta.get("article_id")
 
-                # 查询 MySQL，确认文章存在且没有被软删除
+                if article_id is None:
+                    continue
+
                 article = db.query(Article).filter(
                     Article.id == article_id,
                     Article.is_deleted == False
@@ -286,42 +292,54 @@ class ChromaVectorStore:
                 if article is None:
                     continue
 
+                # 二次权限检查
+                # 公开文章允许其他用户检索
+                # 私有文章只能由文章所有者检索
+                is_public = meta.get("is_public", False)
+
+                if not is_public and article.user_id != user_id:
+                    continue
+
                 candidates.append({
                     "text": text,
                     "article_id": article_id
                 })
+
                 doc_texts.append(text)
+
         finally:
             db.close()
 
-        # 没有有效候选文章时，直接返回空列表
         if not candidates:
             return []
 
-
-        # 3. 使用 BM25 进行关键词打分过滤
         from rank_bm25 import BM25Okapi
-        import jieba  # 用于中文分词
+        import jieba
 
-        # 对问题和文档进行分词
         tokenized_query = list(jieba.cut_for_search(query))
-        tokenized_docs = [list(jieba.cut_for_search(doc)) for doc in doc_texts]
+
+        tokenized_docs = [
+            list(jieba.cut_for_search(doc))
+            for doc in doc_texts
+        ]
 
         bm25 = BM25Okapi(tokenized_docs)
         scores = bm25.get_scores(tokenized_query)
 
-        # 4. 将 BM25 分数与原始数据绑定，并按分数降序排序
         scored_candidates = []
+
         for i, score in enumerate(scores):
-            # 只有当 BM25 得分大于 0（即至少包含一个有效关键词）时才保留
             if score > 0:
-                candidates[i]["bm25_score"] = score
+                candidates[i]["bm25_score"] = float(score)
                 scored_candidates.append(candidates[i])
 
-        scored_candidates.sort(key=lambda x: x["bm25_score"], reverse=True)
+        scored_candidates.sort(
+            key=lambda item: item["bm25_score"],
+            reverse=True
+        )
+
         print("BM25 排序后的候选结果：", scored_candidates)
 
-        # 5. 返回得分最高的 top_k 个结果
         return scored_candidates[:top_k]
 
 # 全局向量库实例

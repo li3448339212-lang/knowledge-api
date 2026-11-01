@@ -1,0 +1,21 @@
+services:
+  api:
+    build: .
+    container_name: knowledge-api
+    restart: unless-stopped
+
+    ports:
+      - "8000:8000"
+
+    env_file:
+      - .env
+
+    environment:
+      DATABASE_URL: ${DATABASE_URL_DOCKER}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL_DOCKER}
+      REDIS_HOST: ${REDIS_HOST}       
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+    volumes:
+      - ./chroma_db:/app/chroma_db

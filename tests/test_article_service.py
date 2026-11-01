@@ -258,6 +258,78 @@ def test_delete_article_service_success(test_db):
         db.close()
 
 
+def test_delete_article_service_creates_cleanup_task_on_vector_failure(
+    test_db,
+    monkeypatch,
+):
+    from models import User, Article, VectorCleanupTask
+    import services.article_service as article_service
+
+    # 模拟向量清理连续两次失败
+    def fail_vector_cleanup(article_id):
+        raise RuntimeError("模拟向量清理失败")
+
+    monkeypatch.setattr(
+        article_service.vector_store,
+        "delete_by_article_id",
+        fail_vector_cleanup,
+    )
+
+    db = test_db()
+    try:
+        user = User(
+            username="cleanup_failure_test_user",
+            password="test_password123",
+            role="user",
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        article = Article(
+            title="向量清理失败测试文章",
+            content="用于测试补偿任务创建",
+            user_id=user.id,
+            is_deleted=False,
+        )
+        db.add(article)
+        db.commit()
+        db.refresh(article)
+
+        article_id = article.id
+        user_id = user.id
+
+        delete_article_service(
+            db=db,
+            article_id=article_id,
+            user_id=user_id,
+        )
+
+        task = (
+            db.query(VectorCleanupTask)
+            .filter(VectorCleanupTask.article_id == article_id)
+            .order_by(VectorCleanupTask.id.desc())
+            .first()
+        )
+
+        assert task is not None
+        assert task.status == "pending"
+        assert task.retry_count == 0
+        assert "向量清理连续两次失败" in task.last_error
+
+        saved_article = (
+            db.query(Article)
+            .filter(Article.id == article_id)
+            .first()
+        )
+        assert saved_article is not None
+        assert saved_article.is_deleted is True
+
+    finally:
+        db.close()
+
+
+
 def test_delete_article_service_denies_other_user(test_db):
     from models import User
     from exceptions import PermissionDeniedError
@@ -400,6 +472,7 @@ def test_article_view_count_only_increments_once_per_user(test_db):
             content="测试重复浏览",
             user_id=user1.id,
             is_deleted=False,
+            is_public=True,
         )
         db.add(article)
         db.commit()
@@ -1313,6 +1386,7 @@ def test_get_article_service_view_count_per_user(test_db, monkeypatch):
             content="测试重复浏览",
             user_id=user1.id,
             is_deleted=False,
+            is_public=True,
             view_count=0,
         )
         db.add(article)
@@ -1886,3 +1960,166 @@ def test_restore_article_service_rollback(test_db, monkeypatch):
 
     finally:
         db.close()
+
+
+def test_pending_cleanup_task_retries_successfully(test_db, monkeypatch):
+    from models import VectorCleanupTask
+    from rag.cleanup_tasks import process_pending_cleanup_tasks
+    import rag.vector_store as vector_store_module
+
+    # 创建一条等待处理的清理任务
+    db = test_db()
+    try:
+        task = VectorCleanupTask(
+            article_id=987654,
+            status="pending",
+            retry_count=0,
+            last_error="模拟之前清理失败",
+        )
+        db.add(task)
+        db.commit()
+        db.refresh(task)
+        task_id = task.id
+    finally:
+        db.close()
+
+    # 模拟向量清理成功，避免真的修改 ChromaDB
+    calls = []
+
+    def fake_delete(article_id):
+        calls.append(article_id)
+
+    monkeypatch.setattr(
+        vector_store_module.vector_store,
+        "delete_by_article_id",
+        fake_delete,
+    )
+
+    # 执行一轮后台任务
+    processed = process_pending_cleanup_tasks(
+        test_db,
+        max_retries=5,
+        batch_size=20,
+    )
+
+    # 验证任务确实执行并成功完成
+    assert processed == 1
+    assert calls == [987654]
+
+    db = test_db()
+    try:
+        saved_task = (
+            db.query(VectorCleanupTask)
+            .filter(VectorCleanupTask.id == task_id)
+            .first()
+        )
+
+        assert saved_task is not None
+        assert saved_task.status == "completed"
+        assert saved_task.last_error is None
+        assert saved_task.retry_count == 0
+    finally:
+        db.close()
+
+
+def test_pending_cleanup_task_marks_failed_after_retry_limit(test_db):
+    from models import VectorCleanupTask
+    from rag.cleanup_tasks import process_pending_cleanup_tasks
+
+    db = test_db()
+    try:
+        task = VectorCleanupTask(
+            article_id=987655,
+            status="pending",
+            retry_count=5,
+            last_error="之前多次清理失败",
+        )
+        db.add(task)
+        db.commit()
+        db.refresh(task)
+        task_id = task.id
+    finally:
+        db.close()
+
+    # 设置最大重试次数为 5；已达到上限的任务应被标记为 failed
+    process_pending_cleanup_tasks(
+        test_db,
+        max_retries=5,
+        batch_size=20,
+    )
+
+    db = test_db()
+    try:
+        saved_task = (
+            db.query(VectorCleanupTask)
+            .filter(VectorCleanupTask.id == task_id)
+            .first()
+        )
+
+        assert saved_task is not None
+        assert saved_task.status == "failed"
+        assert saved_task.retry_count == 5
+    finally:
+        db.close()
+
+
+def test_cleanup_task_only_one_worker_can_claim_it(test_db):
+    from models import VectorCleanupTask
+    from rag.cleanup_tasks import retry_cleanup_task
+
+    # 创建一条待处理的补偿任务
+    db = test_db()
+    try:
+        task = VectorCleanupTask(
+            article_id=987656,
+            status="pending",
+            retry_count=0,
+            last_error="测试并发领取",
+        )
+        db.add(task)
+        db.commit()
+        db.refresh(task)
+        task_id = task.id
+    finally:
+        db.close()
+
+    # 第一个会话先领取任务，将状态改为 processing
+    db1 = test_db()
+    try:
+        claimed = (
+            db1.query(VectorCleanupTask)
+            .filter(
+                VectorCleanupTask.id == task_id,
+                VectorCleanupTask.status == "pending",
+            )
+            .update(
+                {VectorCleanupTask.status: "processing"},
+                synchronize_session=False,
+            )
+        )
+        db1.commit()
+        assert claimed == 1
+    finally:
+        db1.close()
+
+    # 第二个会话再尝试领取同一任务，应该领取失败
+    db2 = test_db()
+    try:
+        result = retry_cleanup_task(db2, task_id)
+        assert result is False
+    finally:
+        db2.close()
+
+    # 最终任务仍然只能由第一个会话领取
+    db = test_db()
+    try:
+        saved_task = (
+            db.query(VectorCleanupTask)
+            .filter(VectorCleanupTask.id == task_id)
+            .first()
+        )
+        assert saved_task is not None
+        assert saved_task.status == "processing"
+    finally:
+        db.close()
+

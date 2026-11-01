@@ -489,21 +489,41 @@ def test_owner_can_confirm_pending_article(client, test_db):
 
 
 
-def test_confirm_create_returns_error_when_article_creation_fails(client):
-    """文章创建失败时，确认接口不能返回成功。"""
-    from models import User
-    from security import hash_password, create_access_token
-    from unittest.mock import patch
+def test_confirm_create_returns_error_when_article_creation_fails():
+    """文章创建失败时，应返回明确的失败结果。"""
+    from unittest.mock import MagicMock
+    import time
+    engine = rag_engine
 
-    db = None
-    user_id = None
+    confirmation_id = "test-create-failure"
+    user_id = 1
 
-    db = next(iter([]), None)  # 不使用真实数据库创建文章
+    engine.pending_article_confirmations[confirmation_id] = {
+        "user_id": user_id,
+        "title": "测试文章",
+        "content": "测试内容",
+        "created_at": time.time(),
+    }
 
-    # 模拟已登录用户身份，避免依赖真实数据库用户
-    from security import get_current_user
+    # 模拟文章创建失败
+    original_create_article = engine.execute_tool
+    engine.execute_tool = MagicMock(
+        side_effect=RuntimeError("模拟数据库写入失败")
+    )
 
-    app = None
+    try:
+        result = engine.confirm_article_creation(
+            confirmation_id=confirmation_id,
+            user_id=user_id,
+        )
+
+        assert "创建文章失败" in result or "确认失败" in result
+
+    finally:
+        engine.execute_tool = original_create_article
+        engine.pending_article_confirmations.pop(
+            confirmation_id, None
+        )
 
 
 def test_explicit_create_request_works_without_search_results(monkeypatch):

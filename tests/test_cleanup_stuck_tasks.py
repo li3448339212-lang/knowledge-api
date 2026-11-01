@@ -16,6 +16,7 @@ def test_stuck_processing_task_returns_to_pending():
             status="processing",
             retry_count=1,
             last_error="模拟任务中断",
+            locked_at=datetime.now() - timedelta(minutes=15),
             updated_at=datetime.now() - timedelta(minutes=15),
         )
         db.add(task)

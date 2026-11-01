@@ -224,11 +224,12 @@ def delete_article_service(
         db.rollback()
         raise
     try:
-        redis_client.delete(
-            f"article:{article_id}"
-        )
+        redis_client.delete(f"article:{article_id}")
     except Exception:
-        pass
+        logger.exception(
+            "文章 Redis 缓存清理失败，article_id=%s",
+            article_id,
+        )
 
         # 尝试清理文章向量，最多重试 2 次
     vector_deleted = False
@@ -282,6 +283,12 @@ def get_article_service(
     ).with_for_update().first()
 
     if article is None:
+        raise NotFoundError()
+
+    # 检查文章访问权限：
+    # 作者可以查看自己的文章；
+    # 其他用户只能查看公开文章。
+    if article.user_id != user_id and not article.is_public:
         raise NotFoundError()
 
     # 2. 从 Redis 读取缓存

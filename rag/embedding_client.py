@@ -1,4 +1,9 @@
 import requests
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 class EmbeddingClient:
     """
@@ -6,9 +11,16 @@ class EmbeddingClient:
     负责将文本转换为向量（数字列表）
     """
 
-    def __init__(self, model_name: str = "nomic-embed-text", base_url: str = "http://localhost:11434"):
-        self.model_name = model_name
-        self.embed_url = f"{base_url}/api/embeddings"
+    def __init__(self):
+        self.model_name = os.getenv(
+            "OLLAMA_MODEL",
+            "nomic-embed-text",
+        )
+        self.base_url = os.getenv(
+            "OLLAMA_BASE_URL",
+            "http://localhost:11434",
+        )
+        self.embed_url = f"{self.base_url}/api/embeddings"
 
     def get_embedding(self, text: str) -> list[float]:
         """

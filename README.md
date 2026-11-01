@@ -1,45 +1,69 @@
 # Knowledge API
 
-基于 FastAPI、MySQL 和 Redis 开发的知识文章管理 API 项目，用于学习后端开发、RESTful API 设计、用户认证、数据库操作和权限控制。
+基于 FastAPI 构建的智能知识库管理与 RAG 问答系统，集成用户认证、文章管理、权限控制、Redis 缓存、向量检索和大语言模型问答能力。
+
+项目使用 MySQL 存储业务数据，使用 ChromaDB 存储文章向量，通过 Ollama 提供本地 Embedding 和大语言模型服务，并支持 Docker Compose 部署。
 
 ## 一、项目介绍
 
-本项目是一个个人学习与实践项目，主要实现用户管理和文章管理，并逐步加入文章互动、数据统计、缓存和数据库迁移等功能。
+本项目是一个个人学习与实践项目，目标是构建一个具备完整后端业务能力和 RAG 知识库问答能力的应用。
 
 主要功能包括：
 
-* 用户注册、登录和个人信息管理
-* 基于 JWT 的身份认证
-* 基于用户角色的权限控制
-* 文章创建、查询、更新和删除
-* 文章软删除与恢复
-* 文章列表分页、关键词搜索和排序
-* 文章点赞与取消点赞
-* 文章收藏与取消收藏
-* 文章评论与评论管理
-* 文章浏览记录和浏览量统计
-* Redis 文章详情缓存
-* SQLAlchemy ORM 数据库操作
-* Alembic 数据库迁移
-* 自定义异常处理和日志记录
+### 1. 用户与文章管理
+- 用户注册、登录和个人信息管理
+- 基于 JWT 的身份认证
+- 基于用户角色的权限控制
+- 文章创建、查询、更新和删除
+- 文章软删除与恢复
+- 文章列表分页、关键词搜索和排序
+- 文章点赞、收藏和评论
+- 文章浏览记录和浏览量统计
 
-> 说明：以上为项目已实现或已开发的功能范围。具体功能是否在当前版本中全部正常运行，应以实际代码和测试结果为准。
+### 2. 缓存与数据库管理
+- Redis 文章详情缓存
+- SQLAlchemy ORM 数据库操作
+- Alembic 数据库迁移
+- 数据库事务管理
+- 自定义异常处理和日志记录
+
+### 3. RAG 知识库问答
+- 将文章内容切分为文本块
+- 使用 Embedding 模型生成文本向量
+- 将向量存储到 ChromaDB
+- 根据用户问题进行向量相似度检索
+- 将检索结果提供给大语言模型生成回答
+- 返回答案及相关来源文章
+
+### 4. 向量数据可靠性
+- 文章向量更新
+- 文章删除后的向量清理
+- 向量清理失败后的补偿任务
+- 向量同步失败后的补偿任务
+- 后台定时处理待重试任务
+- 使用任务状态和租约机制管理任务执行
 
 ## 二、技术栈
 
-| 技术               | 用途             |
-| ---------------- | -------------- |
-| Python           | 后端开发语言         |
-| FastAPI          | Web API 框架     |
-| MySQL            | 关系型数据库         |
-| SQLAlchemy       | ORM 与数据库操作     |
-| Pydantic         | 请求参数验证与响应数据建模  |
-| JWT              | 用户身份认证         |
-| Passlib / bcrypt | 密码哈希与验证        |
-| Redis            | 文章缓存           |
-| Alembic          | 数据库结构迁移        |
-| Uvicorn          | ASGI 应用服务器     |
-| Swagger UI       | 在线 API 文档与接口调试 |
+| 技术 | 用途 |
+|---|---|
+| Python 3.13 | 后端开发语言 |
+| FastAPI | Web API 框架 |
+| MySQL | 关系型数据库 |
+| SQLAlchemy | ORM 与数据库操作 |
+| Pydantic | 请求参数验证与响应建模 |
+| JWT | 用户身份认证 |
+| Passlib / bcrypt | 密码哈希与验证 |
+| Redis | 文章缓存 |
+| Alembic | 数据库结构迁移 |
+| ChromaDB | 向量数据库 |
+| Ollama | 本地模型服务 |
+| nomic-embed-text | 文本 Embedding 模型 |
+| Qwen 系列模型 | 本地大语言模型 |
+| Uvicorn | ASGI 应用服务器 |
+| Docker | 应用容器化 |
+| Docker Compose | 容器编排与部署 |
+| Pytest | 自动化测试 |
 
 ## 三、项目目录结构
 
@@ -54,60 +78,205 @@ knowledge-api/
 ├── exceptions.py
 ├── logger.py
 ├── redis_client.py
+├── requirements.txt
+├── Dockerfile
+├── docker-compose.yml
+├── .dockerignore
 ├── .env.example
 ├── .gitignore
-├── requirements.txt
 ├── README.md
-├── alembic.ini
+│
+├── routers/
+│   ├── users.py
+│   ├── articles.py
+│   └── ...
+│
+├── services/
+│   └── article_service.py
+│
+├── rag/
+│   ├── embedding_client.py
+│   ├── vector_store.py
+│   ├── text_splitter.py
+│   ├── rag_engine.py
+│   └── cleanup_tasks.py
+│
 ├── alembic/
 │   ├── env.py
 │   └── versions/
-├── routers/
-│   ├── users.py
-│   └── articles.py
-├── services/
-│   └── article_service.py
+│
 └── tests/
     ├── conftest.py
     ├── test_users.py
     ├── test_login.py
     ├── test_articles.py
-    ├── test_admin.py
-    ├── test_article_interactions.py
-    └── test_article_service.py
+    └── ...
 ```
 
-实际目录以本地项目为准；如果存在其他文件或子目录，请保留。
+实际目录以项目当前代码为准。
 
 ### 核心文件说明
 
-* `main.py`：创建 FastAPI 应用、注册路由、中间件和异常处理器。
-* `config.py`：读取应用配置。
-* `database.py`：数据库连接、SQLAlchemy 基础配置及数据库会话依赖。
-* `models.py`：定义用户、文章、点赞、收藏、评论和浏览记录等数据库模型。
-* `schemas.py`：定义请求参数、响应结构和数据验证规则。
-* `security.py`：密码哈希、密码验证、JWT 生成与身份认证。
-* `exceptions.py`：自定义业务异常及其处理器。
-* `logger.py`：配置控制台和文件日志。
-* `redis_client.py`：Redis 客户端配置。
-* `routers/users.py`：用户相关 API。
-* `routers/articles.py`：文章及互动相关 API。
-* `services/article_service.py`：文章业务逻辑。
-* `alembic/versions/`：数据库迁移脚本。
+- `main.py`：创建 FastAPI 应用、注册路由和异常处理器，并管理应用生命周期及后台任务。
+- `config.py`：读取应用环境变量。
+- `database.py`：数据库连接、SQLAlchemy 基础配置及数据库会话依赖。
+- `models.py`：定义用户、文章及向量任务等数据库模型。
+- `schemas.py`：定义请求参数、响应结构和数据验证规则。
+- `security.py`：密码哈希、密码验证、JWT 生成与身份认证。
+- `redis_client.py`：Redis 客户端配置。
+- `rag/embedding_client.py`：调用 Ollama Embedding 接口生成文本向量。
+- `rag/vector_store.py`：管理 ChromaDB 向量集合和文章向量。
+- `rag/text_splitter.py`：文章文本切分。
+- `rag/rag_engine.py`：实现 RAG 检索与问答流程。
+- `rag/cleanup_tasks.py`：管理向量清理和同步补偿任务。
+- `Dockerfile`：定义应用镜像构建过程。
+- `docker-compose.yml`：定义应用容器运行配置。
 
-## 四、环境要求
+## 四、系统架构
 
-开始运行前，请准备：
+项目主要由以下几个部分组成：
 
-* Windows 系统或其他支持 Python 的操作系统
-* Python 版本与项目依赖兼容
-* MySQL 服务
-* Redis 服务
-* VS Code 或其他 Python 开发工具
+```text
+                  用户
+                   |
+                   v
+             FastAPI API
+                   |
+          +--------+--------+
+          |        |        |
+          v        v        v
+        MySQL    Redis    RAG 引擎
+          |                 |
+          |                 v
+          |             文本切分
+          |                 |
+          |                 v
+          |             Embedding
+          |                 |
+          |                 v
+          |             ChromaDB
+          |                 |
+          |                 v
+          |             相似度检索
+          |                 |
+          |                 v
+          |             Ollama LLM
+          |                 |
+          +--------+--------+
+                   |
+                   v
+                返回结果
+```
 
-项目开发过程中使用过 Python 3.13。实际运行时应以依赖安装结果为准。
+MySQL 负责保存用户、文章及任务等业务数据。
 
-## 五、安装项目
+Redis 负责缓存文章详情，减少重复数据库查询。
+
+ChromaDB 负责保存文章文本向量，支持语义检索。
+
+Ollama 提供本地 Embedding 和大语言模型服务。
+
+## 五、RAG 工作流程
+
+RAG（Retrieval-Augmented Generation，检索增强生成）是本项目的核心功能之一。
+
+### 1. 知识入库
+
+文章创建或更新后：
+
+1. 获取文章文本。
+2. 将文章切分成多个文本块。
+3. 调用 Embedding 模型生成向量。
+4. 将向量及文章元数据写入 ChromaDB。
+
+### 2. 用户提问
+
+用户提交问题后：
+
+1. 接收用户问题。
+2. 将问题转换为向量。
+3. 在 ChromaDB 中检索相似文本块。
+4. 获取相关知识内容。
+5. 将问题和检索结果交给大语言模型。
+6. 生成回答。
+7. 返回回答及来源文章。
+
+### 3. 向量同步补偿
+
+考虑到 MySQL 和 ChromaDB 是两个独立的数据存储系统，项目增加了向量同步补偿机制。
+
+当文章保存成功，但向量同步失败时：
+
+- 创建待处理的向量同步任务。
+- 记录任务状态和错误信息。
+- 由后台任务定期重试。
+- 成功后更新任务状态。
+- 超过重试次数后标记为失败。
+
+向量清理也采用类似的补偿机制，降低数据库与向量库数据不一致的风险。
+
+## 六、环境要求
+
+本地开发环境：
+
+- Windows 或其他支持 Python 的操作系统
+- Python 3.13
+- MySQL
+- Redis
+- Ollama
+- Docker Desktop（使用 Docker 部署时）
+- VS Code 或其他 Python 开发工具
+
+Ollama 模型需要根据项目实际配置提前下载。
+
+项目使用过的模型包括：
+
+```text
+nomic-embed-text
+qwen2.5:7b
+qwen2.5:1.5b
+qwen3-embedding:4b
+```
+
+当前项目默认 Embedding 模型为 `nomic-embed-text`。
+
+## 七、环境变量配置
+
+在项目根目录创建 `.env` 文件。
+
+可以参考以下配置模板，具体变量应与项目当前配置保持一致：
+
+```dotenv
+# MySQL
+DATABASE_URL=mysql+pymysql://用户名:密码@127.0.0.1:3306/knowledge_db
+
+# JWT
+SECRET_KEY=替换为随机生成的高强度密钥
+
+# Redis
+REDIS_HOST=127.0.0.1
+REDIS_PORT=6379
+REDIS_PASSWORD=替换为Redis密码
+
+# Ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=nomic-embed-text
+
+# Docker 使用的连接地址
+DATABASE_URL_DOCKER=mysql+pymysql://用户名:密码@host.docker.internal:3306/knowledge_db
+OLLAMA_BASE_URL_DOCKER=http://host.docker.internal:11434
+```
+
+注意：
+
+1. 请根据实际环境修改数据库地址、用户名和密码。
+2. Redis 应启用密码验证。
+3. JWT 密钥应使用随机生成的高强度值。
+4. 不要将真实 `.env` 文件提交到公开代码仓库。
+5. 不要在日志或接口响应中暴露密码、密钥和访问令牌。
+6. 数据库密码如果包含特殊字符，需要正确进行 URL 编码。
+
+## 八、本地开发运行
 
 ### 1. 进入项目目录
 
@@ -117,11 +286,11 @@ cd D:\knowledge-api
 
 ### 2. 创建虚拟环境
 
-如果项目已经有 `venv`，可以跳过创建步骤。
-
 ```powershell
 python -m venv venv
 ```
+
+如果已经创建过虚拟环境，可以跳过。
 
 ### 3. 激活虚拟环境
 
@@ -129,193 +298,176 @@ python -m venv venv
 .\venv\Scripts\Activate.ps1
 ```
 
-如果使用的是 Windows 命令提示符（CMD），可以运行：
-
-```bat
-venv\Scripts\activate.bat
-```
-
 ### 4. 安装依赖
-
-如果已经维护了 `requirements.txt`：
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-如果还没有依赖清单，应先根据实际项目导入情况整理并生成，不要直接假设所有依赖版本。
-
-## 六、环境变量配置
-
-在项目根目录创建 `.env` 文件。变量名称必须与 `config.py` 中实际读取的名称一致。
-
-示例：
-
-```dotenv
-DATABASE_URL=mysql+pymysql://用户名:密码@127.0.0.1:3306/knowledge_db
-SECRET_KEY=替换为随机生成的高强度密钥
-REDIS_HOST=127.0.0.1
-REDIS_PORT=6379
-REDIS_DB=0
-```
-
-以上是配置示例，并不代表当前项目一定使用这些精确变量名称。请以 `config.py` 和 `redis_client.py` 的实现为准。
-
-注意事项：
-
-1. 将数据库用户名和密码替换为自己的配置。
-2. JWT 密钥应使用足够随机且保密的值。
-3. 不要将真实 `.env` 文件提交到公开代码仓库。
-4. 不要在日志、接口响应或代码中暴露数据库密码和 JWT 密钥。
-5. 如果数据库连接使用特殊字符作为密码，需要正确进行 URL 编码。
-
-## 七、数据库初始化与迁移
-
-项目使用 SQLAlchemy 管理数据库模型，并通过 Alembic 管理数据库结构变更。
-
-### 1. 创建数据库
-
-先在 MySQL 中创建项目使用的数据库，例如：
-
-```sql
-CREATE DATABASE knowledge_db
-CHARACTER SET utf8mb4
-COLLATE utf8mb4_unicode_ci;
-```
-
-如果数据库已经存在，无需重复创建。
-
-### 2. 检查迁移状态
-
-```powershell
-alembic current
-```
-
-查看当前数据库所处的迁移版本。
-
-### 3. 查看迁移历史
-
-```powershell
-alembic history
-```
-
-检查项目已有的迁移脚本。
-
-### 4. 应用迁移
+### 5. 数据库迁移
 
 ```powershell
 alembic upgrade head
 ```
 
-此命令将数据库迁移到当前迁移链的最新版本。
-
-### 5. 生成新的迁移
-
-修改模型后，如果确实需要调整数据库结构，可以执行：
-
-```powershell
-alembic revision --autogenerate -m "describe_schema_change"
-```
-
-生成脚本后，应先检查迁移内容，再执行：
-
-```powershell
-alembic upgrade head
-```
-
-不要在未检查自动生成脚本的情况下，直接对重要数据库执行迁移。迁移操作前应做好数据备份。
-
-## 八、启动项目
-
-在项目根目录并激活虚拟环境后运行：
+### 6. 启动项目
 
 ```powershell
 python -m uvicorn main:app --reload
 ```
 
-如果项目使用根目录下的虚拟环境，也可以运行：
+访问：
+
+- API 根路径：`http://127.0.0.1:8000/`
+- Swagger 文档：`http://127.0.0.1:8000/docs`
+- OpenAPI JSON：`http://127.0.0.1:8000/openapi.json`
+
+## 九、Docker 部署
+
+项目已支持使用 Docker Compose 构建和启动 FastAPI 服务。
+
+### 1. 部署前准备
+
+需要提前准备：
+
+- Docker Desktop
+- MySQL 服务
+- Redis 服务
+- Ollama 服务
+- 所需 Ollama 模型
+
+当前部署方案中，MySQL、Redis 和 Ollama 运行在 Docker 容器外部，FastAPI 运行在 Docker 容器中。
+
+### 2. 配置环境变量
+
+在 `.env` 中填写数据库、Redis、JWT 和 Ollama 配置。
+
+Docker 环境使用：
+
+- `DATABASE_URL_DOCKER`
+- `OLLAMA_BASE_URL_DOCKER`
+- `REDIS_HOST`
+- `REDIS_PASSWORD`
+
+其中 `host.docker.internal` 用于容器访问 Windows 宿主机上的服务。
+
+### 3. 构建镜像
 
 ```powershell
-.\venv\Scripts\python.exe -m uvicorn main:app --reload
+docker compose build
 ```
 
-默认本地地址通常为：
+### 4. 启动容器
 
-* API 根路径：`http://127.0.0.1:8000/`
-* Swagger 文档：`http://127.0.0.1:8000/docs`
-* OpenAPI JSON：`http://127.0.0.1:8000/openapi.json`
+```powershell
+docker compose up -d
+```
 
-开发阶段可以使用 `--reload`。部署到生产环境时，应根据部署方案配置工作进程、日志、网络访问和安全策略。
+也可以使用：
 
-## 九、主要 API 功能
+```powershell
+docker compose up -d --build
+```
 
-以下为项目接口的功能分类。具体路径、请求参数和响应格式以当前代码及 Swagger 文档为准。
+### 5. 查看容器状态
+
+```powershell
+docker compose ps
+```
+
+### 6. 查看运行日志
+
+```powershell
+docker compose logs --tail=100 api
+```
+
+### 7. 测试 Redis 连接
+
+```powershell
+docker compose exec api python -c "from redis_client import redis_client; print(redis_client.ping())"
+```
+
+### 8. 测试 MySQL 连接
+
+```powershell
+docker compose exec api python -c "from database import engine; conn=engine.connect(); print('MySQL连接成功'); conn.close()"
+```
+
+### 9. 停止容器
+
+```powershell
+docker compose down
+```
+
+### 10. 访问 API
+
+浏览器访问：
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+项目使用本地目录映射保存 ChromaDB 数据：
+
+```yaml
+volumes:
+  - ./chroma_db:/app/chroma_db
+```
+
+这样容器重新创建后，仍然可以使用宿主机中保存的向量数据。
+
+注意：Docker Compose 的 `.env` 文件只用于运行时配置，不应打包进镜像。正式部署前还需要配置网络访问限制、HTTPS、数据备份和生产环境日志。
+
+## 十、主要 API 功能
+
+项目提供用户管理、文章管理和文章互动等 API。
+
+具体路由、参数和响应格式以当前代码及 Swagger 文档为准。
 
 ### 用户管理
 
-| 方法     | 路径                       | 功能               |
-| ------ | ------------------------ | ---------------- |
-| POST   | `/users`                 | 创建用户             |
-| GET    | `/users`                 | 查询用户列表，按实际权限限制访问 |
-| GET    | `/users/{user_id}`       | 查询指定用户           |
-| PUT    | `/users/{user_id}`       | 更新用户信息           |
-| DELETE | `/users/{user_id}`       | 删除用户             |
-| POST   | `/login`                 | 用户登录             |
-| DELETE | `/admin/users/{user_id}` | 管理员删除用户          |
+- 用户注册
+- 用户登录
+- 查询用户信息
+- 更新用户信息
+- 用户删除
+- 管理员用户管理
 
 ### 文章管理
 
-| 方法     | 路径                                     | 功能        |
-| ------ | -------------------------------------- | --------- |
-| POST   | `/articles`                            | 创建文章      |
-| GET    | `/articles`                            | 查询文章列表    |
-| GET    | `/articles/{article_id}`               | 查询文章详情    |
-| PUT    | `/articles/{article_id}`               | 更新文章      |
-| DELETE | `/articles/{article_id}`               | 删除文章      |
-| GET    | `/my_articles`                         | 查询当前用户的文章 |
-| GET    | `/admin/articles`                      | 管理员查询文章   |
-| DELETE | `/admin/articles/{article_id}`         | 管理员删除文章   |
-| POST   | `/admin/articles/{article_id}/restore` | 恢复已软删除的文章 |
+- 创建文章
+- 查询文章列表
+- 查询文章详情
+- 更新文章
+- 删除文章
+- 查询当前用户文章
+- 管理员文章管理
+- 恢复已软删除文章
 
 ### 文章互动
 
-| 方法     | 路径                                | 功能       |
-| ------ | --------------------------------- | -------- |
-| POST   | `/articles/{article_id}/like`     | 点赞文章     |
-| DELETE | `/articles/{article_id}/like`     | 取消点赞     |
-| GET    | `/articles/{article_id}/likes`    | 查询文章点赞信息 |
-| POST   | `/articles/{article_id}/favorite` | 收藏文章     |
-| DELETE | `/articles/{article_id}/favorite` | 取消收藏     |
-| GET    | `/my_likes`                       | 查询我的点赞   |
-| GET    | `/my_favorites`                   | 查询我的收藏   |
-| POST   | `/articles/{article_id}/comments` | 发表评论     |
-| GET    | `/articles/{article_id}/comments` | 查询文章评论   |
-| DELETE | `/articles/comments/{comment_id}` | 删除自己的评论  |
-| DELETE | `/admin/comments/{comment_id}`    | 管理员删除评论  |
+- 点赞与取消点赞
+- 收藏与取消收藏
+- 评论与评论管理
+- 浏览记录
+- 浏览量统计
 
-### 浏览统计
+### RAG 知识库
 
-| 方法  | 路径                                  | 功能       |
-| --- | ----------------------------------- | -------- |
-| GET | `/articles/{article_id}/views`      | 查询文章浏览记录 |
-| GET | `/articles/{article_id}/view-stats` | 查询文章浏览统计 |
+- 文章向量化
+- 知识库向量检索
+- 智能问答
+- 返回相关来源文章
+- 向量同步补偿
+- 向量清理补偿
 
-部分接口可能需要 JWT 身份认证，管理员接口还需要管理员权限。请通过 `/docs` 确认当前实际注册的接口。
-
-## 十、身份认证与权限控制
+## 十一、身份认证与权限控制
 
 ### 1. JWT 身份认证
 
-登录成功后，API 返回访问令牌：
+用户登录成功后获取访问令牌。
 
-```json
-{
-  "access_token": "实际返回的令牌",
-  "token_type": "bearer"
-}
-```
-
-调用需要身份认证的接口时，应在请求头中携带：
+调用需要认证的接口时，在请求头中携带：
 
 ```text
 Authorization: Bearer <access_token>
@@ -327,117 +479,108 @@ Authorization: Bearer <access_token>
 
 项目使用用户角色区分普通用户和管理员。
 
-* 普通用户通过身份认证后访问允许的接口。
-* 管理员接口通过 `get_admin_user` 检查角色。
-* 当前用户身份和角色由数据库记录核实。
-* 文章更新和删除等操作应检查文章所有权。
+- 普通用户只能访问权限允许的接口。
+- 管理员接口通过管理员权限依赖进行验证。
+- 文章更新和删除等操作需要检查文章所有权。
 
 ### 3. 文章数据隔离
 
-用户创建文章时，应从已验证的当前用户信息中获取 `user_id`，而不是信任客户端提交的作者 ID。
+创建文章时，应从已验证的当前用户信息中获取 `user_id`，而不是信任客户端提交的作者 ID。
 
-修改或删除文章时，应验证当前用户是否拥有该文章，管理员操作则按相应权限规则执行。
+修改或删除文章时，应验证当前用户是否拥有该文章。
 
-## 十一、文章缓存
+## 十二、缓存与数据一致性
 
-项目使用 Redis 缓存文章详情，以减少部分重复数据库查询。
+### Redis 缓存
 
-缓存相关代码主要位于：
-
-* `redis_client.py`
-* `services/article_service.py`
+项目使用 Redis 缓存文章详情，以减少重复数据库查询。
 
 维护缓存时需要注意：
 
-1. 文章内容更新后应清理或更新对应缓存。
-2. 文章删除或恢复后应考虑缓存失效。
-3. 删除用户并连带删除文章时，应清理这些文章的缓存。
-4. Redis 不可用时，业务是否能够继续运行取决于具体服务实现。
-5. 如果将来新增缓存键，需要同步维护失效逻辑。
+1. 文章更新后清理或更新对应缓存。
+2. 文章删除或恢复后处理缓存失效。
+3. Redis 不可用时，业务是否能够继续运行取决于具体服务实现。
 
-## 十二、数据库事务与数据清理
+### 向量同步与清理
 
-项目使用数据库事务管理多步写入操作。出现异常时，应回滚未完成的事务。
+MySQL 和 ChromaDB 之间的数据同步通过补偿任务处理。
 
-用户删除功能需要考虑关联数据，包括：
+主要考虑：
 
-* 用户拥有的文章
-* 点赞记录
-* 收藏记录
-* 评论记录
-* 浏览记录
+- 向量生成失败
+- 向量写入失败
+- 文章删除后的向量清理失败
+- 后台任务重复执行
+- 任务超过重试次数
 
-删除用户的文章时，也要清理其他用户与这些文章关联的数据，避免外键冲突或遗留记录。
-
-文章软删除与用户彻底删除是不同的业务行为，应根据实际需求分别处理。
+任务状态和租约机制用于降低并发执行时的重复处理风险。
 
 ## 十三、日志与异常处理
 
-### 日志
-
-日志模块主要位于 `logger.py`，用于记录应用运行信息和 HTTP 请求。
+日志模块用于记录应用运行信息和异常。
 
 日志中不应记录：
 
-* 明文密码
-* 密码哈希
-* JWT 访问令牌
-* 数据库连接密码
-* JWT 密钥
+- 明文密码
+- 密码哈希
+- JWT 访问令牌
+- 数据库连接密码
+- JWT 密钥
 
-日志目录和轮转设置应与实际配置保持一致。
+项目使用自定义业务异常统一处理常见错误，包括：
 
-### 异常处理
-
-`exceptions.py` 定义了业务异常，包括：
-
-* `NotFoundError`
-* `PermissionDeniedError`
-* `BadRequestError`
-* `UnauthorizedError`
-
-`main.py` 负责注册对应处理器，并对请求参数验证错误进行统一处理。
+- `NotFoundError`
+- `PermissionDeniedError`
+- `BadRequestError`
+- `UnauthorizedError`
 
 常见 HTTP 状态码：
 
-| 状态码 | 含义        |
-| --- | --------- |
-| 200 | 请求成功      |
+| 状态码 | 含义 |
+|---|---|
+| 200 | 请求成功 |
 | 400 | 请求不符合业务要求 |
-| 401 | 未通过身份认证   |
+| 401 | 未通过身份认证 |
 | 403 | 没有执行操作的权限 |
-| 404 | 资源不存在     |
-| 422 | 请求参数验证失败  |
-| 500 | 服务器内部错误   |
+| 404 | 资源不存在 |
+| 422 | 请求参数验证失败 |
+| 500 | 服务器内部错误 |
 
-## 十四、开发与测试建议
+## 十四、测试
 
-开发新功能时，建议遵循以下流程：
+项目使用 Pytest 进行自动化测试。
 
-1. 在 `models.py` 中设计数据库模型。
-2. 在 `schemas.py` 中定义请求和响应结构。
-3. 使用 Alembic 管理数据库结构变更。
-4. 在 `services/` 中实现业务逻辑。
-5. 在 `routers/` 中定义 API 路由和依赖。
-6. 在 `security.py` 中复用身份认证和权限依赖。
-7. 在 `/docs` 中验证接口参数、响应和错误情况。
-8. 对关键权限与数据删除逻辑进行测试。
+运行全部测试：
 
-优先测试以下场景：
+```powershell
+pytest -v
+```
 
-* 未登录访问需要认证的接口。
-* 普通用户访问管理员接口。
-* 用户修改或删除其他用户的文章。
-* 重复点赞和重复收藏。
-* 查询不存在的文章。
-* 删除用户时清理关联数据。
-* Redis 缓存失效后重新读取文章。
-* 请求参数错误时的统一响应。
-* 数据库操作失败时的事务回滚。
+运行指定测试文件：
 
-## 十五、Git 与敏感信息
+```powershell
+pytest tests/test_articles.py -v
+```
 
-建议在 `.gitignore` 中忽略本地环境、密钥和日志，例如：
+建议重点测试：
+
+- 用户注册和登录
+- JWT 身份认证
+- 普通用户与管理员权限
+- 用户文章归属校验
+- 文章创建、更新和删除
+- 点赞、收藏和评论
+- Redis 缓存失效
+- 向量更新和删除
+- 向量同步失败后的补偿
+- 向量清理失败后的重试
+- 任务超过重试次数后的状态处理
+
+具体测试通过情况应以实际 Pytest 执行结果为准。
+
+## 十五、Git 与敏感信息管理
+
+建议在 `.gitignore` 中忽略：
 
 ```gitignore
 venv/
@@ -446,37 +589,73 @@ __pycache__/
 *.py[cod]
 .env
 logs/
+*.log
 .pytest_cache/
+chroma_db/
 ```
 
-项目根目录提供了 `.env.example` 配置模板，供开发者参考并创建自己的 `.env` 文件。请在 `.env` 中填写实际的数据库连接信息和随机密钥，不要将真实密码或密钥提交到 Git 仓库。
+注意：
 
-## 十六、后续改进方向
+- 不要提交真实 `.env`。
+- 不要提交数据库密码和 JWT 密钥。
+- 不要将本地虚拟环境提交到仓库。
+- 根据实际项目需要决定是否提交 ChromaDB 数据目录。
+- 提供 `.env.example` 供其他开发者配置环境。
 
-项目可以在现有功能基础上继续完善：
+## 十六、项目部署验收
 
-* 为关键业务编写自动化测试。
-* 为点赞、收藏和评论接口补充边界测试。
-* 优化文章列表与互动列表的查询性能。
-* 检查数据库索引和查询计划。
-* 完善数据库备份与迁移回滚方案。
-* 根据部署需求增加 Docker 配置。
-* 配置生产环境日志、HTTPS 和访问限制。
-* 完善 API 文档、版本管理与错误响应规范。
+目前已经完成以下部署验证：
 
-## 十七、学习目标
+| 验收项目 | 结果 |
+|---|---|
+| Docker 镜像构建 | 已通过 |
+| Docker Compose 启动 | 已通过 |
+| FastAPI 容器运行 | 已通过 |
+| Swagger 文档访问 | 已通过 |
+| MySQL 连接 | 已通过 |
+| Redis 密码认证 | 已通过 |
+| ChromaDB 初始化 | 已通过 |
+| RAG 知识库初始化 | 已通过 |
+| RAG 问答请求 | 已通过 |
+| 来源文章返回 | 已通过 |
 
-通过这个项目，可以逐步掌握：
+以上结果来自当前开发环境的实际部署过程，不代表已经完成生产环境压力测试或全部自动化测试。
 
-* Python 后端项目的组织方式
-* FastAPI 路由与依赖注入
-* SQLAlchemy 数据模型和查询
-* Pydantic 数据验证
-* JWT 身份认证与角色授权
-* MySQL 事务和关联数据管理
-* Redis 缓存与缓存失效
-* Alembic 数据库迁移
-* 异常处理与日志配置
-* RESTful API 的设计和调试
+## 十七、后续改进方向
 
-本项目主要用于学习和实践。用于生产环境前，应完成自动化测试、安全检查、部署配置和数据备份方案的验证。
+项目后续可以重点完善：
+
+- 完成全量自动化测试与边界测试
+- 优化 RAG 检索效果
+- 完善向量任务监控和异常告警
+- 优化数据库查询与缓存策略
+- 完善数据备份和恢复方案
+- 增加生产环境 HTTPS 和访问限制
+- 完善日志轮转和容器健康检查
+- 完善项目部署文档
+
+## 十八、学习目标
+
+通过这个项目，可以实践和掌握：
+
+- Python 后端项目组织
+- FastAPI 路由与依赖注入
+- SQLAlchemy 数据模型和查询
+- Pydantic 数据验证
+- JWT 身份认证与权限控制
+- MySQL 事务与关联数据管理
+- Redis 缓存
+- Alembic 数据库迁移
+- ChromaDB 向量存储
+- Embedding 文本向量化
+- RAG 检索增强生成
+- Ollama 本地模型调用
+- 后台任务与失败补偿机制
+- Docker 镜像构建和容器部署
+- Pytest 自动化测试
+
+---
+
+**项目名称：Knowledge API**
+
+**项目定位：基于 FastAPI、ChromaDB 和 Ollama 的智能知识库管理与 RAG 问答系统。**
