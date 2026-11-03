@@ -223,38 +223,190 @@ class RAGEngine:
             with self._state_lock:
                 self._confirming_ids.discard(confirmation_id)
 
+    
+    
     def get_tools(self) -> list[dict]:
-        """定义 AI 可以使用的工具（Function Calling）。"""
+        """定义 Ollama 原生 Function Calling 工具。"""
+
         return [
             {
-                "name": "create_article",
-                "description": "当用户要求创建、编写、发布一篇文章时，调用此工具。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "title": {
-                            "type": "string",
-                            "description": "文章的标题",
+                "type": "function",
+                "function": {
+                    "name": "search_articles",
+                    "description": (
+                        "搜索知识库中的文章内容。"
+                        "用户寻找相关资料或提出知识库问题时调用。"
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "搜索关键词或用户的问题",
+                            },
+                            "top_k": {
+                                "type": "integer",
+                                "description": "返回结果数量，范围 1 到 10",
+                            },
                         },
-                        "content": {
-                            "type": "string",
-                            "description": "文章的正文内容",
-                        },
+                        "required": ["query"],
                     },
-                    "required": ["title", "content"],
                 },
-            }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_article_detail",
+                    "description": "根据文章 ID 获取文章完整内容。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "article_id": {
+                                "type": "integer",
+                                "description": "文章 ID",
+                            },
+                        },
+                        "required": ["article_id"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "create_article",
+                    "description": (
+                        "用户明确要求创建并保存新文章时调用。"
+                        "实际创建前必须经过用户确认。"
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "title": {
+                                "type": "string",
+                                "description": "文章标题",
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "文章正文",
+                            },
+                        },
+                        "required": ["title", "content"],
+                    },
+                },
+            },
         ]
 
-    def execute_tool(
-        self,
+
+
+    
+    def execute_tool(self,
         tool_name: str,
         tool_args: dict,
         user_id: int = None,
     ) -> str:
-        """执行具体的工具操作。"""
+        """执行 Agent 工具操作。"""
 
-        if tool_name == "create_article":
+        # 1. 搜索知识库文章
+        if tool_name == "search_articles":
+            if user_id is None:
+                return "搜索失败：无法确认当前用户身份，请先登录。"
+
+            query = tool_args.get("query")
+            top_k = tool_args.get("top_k", 3)
+
+            if not isinstance(query, str) or not query.strip():
+                return "搜索失败：搜索关键词不能为空。"
+
+            if not isinstance(top_k, int) or isinstance(top_k, bool):
+                return "搜索失败：top_k 必须是整数。"
+
+            if not 1 <= top_k <= 10:
+                return "搜索失败：top_k 必须在 1 到 10 之间。"
+
+            try:
+                results = vector_store.search(
+                    query=query.strip(),
+                    user_id=user_id,
+                    top_k=top_k,
+                )
+
+                if not results:
+                    return "没有找到相关的文章内容。"
+
+                return {
+                    "message": "知识库搜索完成",
+                    "results": [
+                        {
+                            "article_id": item["article_id"],
+                            "rrf_score": item.get("rrf_score", 0),
+                            "text": item["text"],
+                        }
+                        for item in results
+                    ],
+                }
+
+            except Exception:
+                logger.exception(
+                    "Agent 搜索文章失败，user_id=%s",
+                    user_id,
+                )
+                return "搜索失败：知识库暂时无法完成检索。"
+
+        # 2. 查询单篇文章详情
+        elif tool_name == "get_article_detail":
+            if user_id is None:
+                return "查询失败：无法确认当前用户身份，请先登录。"
+
+            article_id = tool_args.get("article_id")
+
+            if (
+                not isinstance(article_id, int)
+                or isinstance(article_id, bool)
+                or article_id <= 0
+            ):
+                return "查询失败：文章 ID 必须是正整数。"
+
+            from database import SessionLocal
+            from models import Article
+
+            from sqlalchemy import or_
+
+            db = SessionLocal()
+
+            try:
+                article = db.query(Article).filter(
+                    Article.id == article_id,
+                    Article.is_deleted == False,
+                    or_(
+                        Article.user_id == user_id,
+                        Article.is_public == True,
+                    ),
+                ).first()
+
+                if article is None:
+                    return "没有找到该文章，或者你没有权限查看该文章。"
+
+                return (
+                    f"文章详情："
+                    f"\n文章 ID：{article.id}"
+                    f"\n标题：{article.title}"
+                    f"\n作者 ID：{article.user_id}"
+                    f"\n正文：\n{article.content}"
+                )
+
+            except Exception:
+                logger.exception(
+                    "Agent 查询文章详情失败，article_id=%s，user_id=%s",
+                    article_id,
+                    user_id,
+                )
+                return "查询失败：读取文章时发生错误。"
+
+            finally:
+                db.close()
+
+        # 3. 创建文章
+        elif tool_name == "create_article":
             if user_id is None:
                 return "创建文章失败：无法确认当前用户身份，请先登录。"
 
@@ -290,7 +442,9 @@ class RAGEngine:
                 try:
                     from rag.text_splitter import text_splitter
 
-                    chunks = text_splitter.split_text(new_article.content)
+                    chunks = text_splitter.split_text(
+                        new_article.content
+                    )
 
                     vector_store.update_article(
                         chunks,
@@ -314,6 +468,7 @@ class RAGEngine:
                             new_article.id,
                             str(e),
                         )
+
                     except Exception:
                         logger.exception(
                             "文章已创建，但保存向量同步任务失败，article_id=%s",
@@ -322,15 +477,23 @@ class RAGEngine:
 
                     return (
                         f"文章《{new_article.title}》已成功创建，"
-                        f"ID 为 {new_article.id}，并已同步至知识库！"
+                        f"ID 为 {new_article.id}。"
+                        "但知识库向量同步失败，系统已尝试创建后台补偿任务。"
                     )
+
+                return (
+                    f"文章《{new_article.title}》已成功创建，"
+                    f"ID 为 {new_article.id}，并已同步至知识库！"
+                )
 
             except Exception as e:
                 db.rollback()
+
                 logger.exception(
                     "创建文章失败，user_id=%s",
                     user_id,
                 )
+
                 return f"创建文章失败：{str(e)}"
 
             finally:
@@ -338,6 +501,8 @@ class RAGEngine:
 
         return "未知的工具名称"
 
+
+    
     def ask(
         self,
         question: str,
@@ -345,8 +510,12 @@ class RAGEngine:
         user_id: int = None,
     ) -> dict:
         """
-        核心问答方法：检索、记忆、生成、来源过滤以及工具调用。
+        RAG + 原生 Function Calling 多步骤 Agent。
+        最多执行 5 轮工具调用。
         """
+
+        import json
+        from rag.llm_client import ollama_client
 
         print(f"\n正在处理问题 (Session: {session_id}): {question}")
 
@@ -358,35 +527,34 @@ class RAGEngine:
             }
 
         # 2. 检索知识库
-        search_results = vector_store.search(
-            question,
-            user_id=user_id,
-        )
+        try:
+            search_results = vector_store.search(
+                question,
+                user_id=user_id,
+            )
+        except Exception:
+            logger.exception("RAG 检索失败，user_id=%s", user_id)
+            search_results = []
 
         session_id = f"{user_id}:{session_id}"
 
-        # 清理超过 1 小时没有活动的会话
         self.cleanup_expired_sessions()
 
-        # 更新当前会话的最后活动时间
         with self._state_lock:
             self.chat_history_last_active[session_id] = time.time()
+            history = list(self.chat_history[session_id])
 
-        # 清理超过 10 分钟的待确认文章请求
         self.cleanup_expired_confirmations()
 
-        # 没有检索结果时，普通问答直接返回；
-        # 明确要求创建文章时，继续调用大模型生成待确认请求。
-        if not search_results:
-            if not is_explicit_create_request(question):
-                return {
-                    "answer": "抱歉，当前知识库中没有找到相关信息。",
-                    "sources": [],
-                }
+        explicit_create = is_explicit_create_request(question)
 
-            search_results = []
+        if not search_results and not explicit_create:
+            return {
+                "answer": "抱歉，当前知识库中没有找到相关信息。",
+                "sources": [],
+            }
 
-        # 3. 组装上下文并收集来源
+        # 3. 组装 RAG 上下文和来源
         context_parts = []
         valid_sources = []
         seen_ids = set()
@@ -405,249 +573,339 @@ class RAGEngine:
                 seen_ids.add(article_id)
                 valid_sources.append(article_id)
 
-        if not context_parts:
-            if not is_explicit_create_request(question):
-                return {
-                    "answer": "抱歉，当前知识库中没有找到相关信息。",
-                    "sources": [],
-                }
-
         context = "\n\n".join(context_parts)
 
-        # 4. 从数据库查出文章标题
+        # 4. 查询来源文章标题
         source_details = []
 
         if valid_sources:
             from database import SessionLocal
             from models import Article
+            from sqlalchemy import or_
 
             db = SessionLocal()
 
             try:
-                from sqlalchemy import or_
-
                 articles = db.query(Article).filter(
                     Article.id.in_(valid_sources),
                     Article.is_deleted == False,
                     or_(
                         Article.is_public == True,
-                        Article.user_id == user_id
-                    )
+                        Article.user_id == user_id,
+                    ),
                 ).all()
 
                 for article in articles:
-                    source_details.append(
-                        {
-                            "article_id": article.id,
-                            "title": article.title,
-                            "url": f"/articles/{article.id}",
-                        }
-                    )
+                    source_details.append({
+                        "article_id": article.id,
+                        "title": article.title,
+                        "url": f"/articles/{article.id}",
+                    })
 
             finally:
                 db.close()
 
-        # 5. 格式化历史对话
-        history_text = ""
+        # 5. 构建历史消息
+        messages = [
+            {
+                "role": "system",
+                "content": f"""你是一个专业的知识库 Agent。
 
-        with self._state_lock:
-            history = list(self.chat_history[session_id])
+    当前用户 ID：{user_id}
 
-        if history:
-            history_lines = []
+    参考资料：
+    {context if context else "当前没有检索到参考资料。"}
 
-            for msg in history:
-                role = "用户" if msg["role"] == "user" else "AI助手"
-                history_lines.append(f"{role}: {msg['content']}")
+    历史对话用于理解用户的上下文。
 
-            history_text = "\n".join(history_lines)
+    规则：
+    1. 普通知识库问题优先使用参考资料回答。
+    2. 参考资料不足时，可以调用 search_articles 搜索知识库。
+    3. 用户要求读取指定文章时，可以调用 get_article_detail。
+    4. 用户明确要求创建并保存文章时，才可以调用 create_article。
+    5. 搜索、查询、阅读、总结已有文章时，禁止调用 create_article。
+    6. 用户意图不明确时，不得创建文章。
+    7. 不得编造文章内容、标题或搜索结果。
+    8. 只能使用工具返回的内容作为知识库事实依据。
+    9. 文章创建工具只会生成待确认请求，不代表文章已经保存。
+    10. 使用中文回答用户。"""
+            }
+        ]
 
-        # 6. 构建问答提示词
-        prompt = f"""你是一个专业的知识助手。请严格根据以下参考资料和历史对话回答问题。
+        for msg in history:
+            messages.append({
+                "role": msg["role"],
+                "content": msg["content"],
+            })
 
-参考资料：
-{context}
+        messages.append({
+            "role": "user",
+            "content": question,
+        })
 
-历史对话：
-{history_text if history_text else "无"}
-
-用户最新问题：{question}
-
-要求：
-1. 仅根据参考资料回答，绝对不要使用你自己的外部知识。
-2. 结合历史对话理解用户的最新问题（例如代词"它"指的是什么）。
-3. 如果参考资料不足以回答问题，请直接回复："知识库中暂无相关信息"。
-4. 直接给出答案，不要提及"根据参考资料"等废话。"""
-
-        # 7. 调用大模型
-        from rag.llm_client import ollama_client
-        import json
-
+        # 6. 获取工具定义
         tools = self.get_tools()
 
-        tools_prompt = f"""你是一个专业的知识库问答助手。请严格遵守以下规则：
-1. 普通问答仅根据参考资料回答，不使用外部知识。
-2. 结合历史对话理解用户的最新问题。
-3. 如果参考资料不足以回答问题，回复："知识库中暂无相关信息"。
-4. 普通回答直接给出答案，不要提及"根据参考资料"等废话。
-5. 只有在用户明确要求创建并保存文章时，才可以提出 create_article 工具调用。
-
-你可以使用以下工具：
-{json.dumps(tools, ensure_ascii=False, indent=2)}
-
-必须严格遵守以下规则：
-1. 只有当用户明确要求新建、创建或撰写文章，并希望保存到知识库时，才可以调用 create_article。
-2. 搜索、查询、检索、查看、核实或列出已有文章时，绝对不能调用 create_article。
-3. 用户明确要求只查询、不要创建、不要修改或不要删除时，不能调用工具。
-4. 用户要求总结已有文章时，不能调用 create_article。
-5. 用户意图不明确时，不得调用 create_article，应先询问用户。
-6. 需要创建文章时，只能返回合法 JSON：
-{{"tool_call": {{"name": "create_article", "arguments": {{"title": "文章标题", "content": "文章正文"}}}}}}
-7. 不需要调用工具时，直接用中文回答，不要返回 JSON。
-"""
-
-        full_prompt = f"""{tools_prompt}
-
-参考资料：
-{context}
-
-历史对话：
-{history_text if history_text else '无'}
-
-用户最新问题：{question}
-
-回答规则：
-1. 回答知识库问题时，优先依据提供的知识库检索内容。
-2. 如果检索内容没有提供回答问题所需的信息，明确告知用户当前知识库中没有找到足够的信息。
-3. 不要把模型自身的常识当作知识库检索结果。
-4. 不要编造文章内容、文章标题或来源。
-5. 如果检索内容只支持部分结论，只回答有依据的部分，并说明信息不足。
-6. 只有在知识库内容能够支持结论时，才将结论表述为来自知识库。
-"""
-
-        raw_response = ollama_client.generate(full_prompt)
-
-        # 8. 解析大模型响应
-        answer = raw_response
-        final_sources = []
+        # 7. 多步骤 Agent 执行循环
+        max_tool_rounds = 5
         tool_used = False
         pending_confirmation = None
+        tool_errors = []
+        raw_response = ""
 
-        try:
-            response_json = json.loads(raw_response)
+        for round_index in range(max_tool_rounds + 1):
 
-            if isinstance(response_json, dict) and "tool_call" in response_json:
-                tool_call = response_json["tool_call"]
+            try:
+                message = ollama_client.chat(
+                    messages=messages,
+                    tools=tools,
+                )
 
-                if not isinstance(tool_call, dict):
-                    answer = "工具调用格式不正确，未执行任何操作。"
+            except Exception:
+                logger.exception(
+                    "Agent 调用 Ollama 失败，user_id=%s",
+                    user_id,
+                )
 
-                elif tool_call.get("name") != "create_article":
-                    answer = "暂不支持该工具，未执行任何操作。"
+                return {
+                    "answer": "AI 服务暂时无法正常响应，请稍后重试。",
+                    "sources": source_details,
+                }
+
+            if not isinstance(message, dict):
+                return {
+                    "answer": "AI 返回的数据格式不正确。",
+                    "sources": [],
+                }
+
+            raw_response = message.get("content", "") or ""
+            tool_calls = message.get("tool_calls") or []
+
+            # 没有工具调用，说明模型已经生成最终回答
+            if not tool_calls:
+                break
+
+            # 达到最大工具调用轮数
+            if round_index >= max_tool_rounds:
+                logger.warning(
+                    "Agent 达到最大工具调用轮数，user_id=%s",
+                    user_id,
+                )
+                raw_response = (
+                    "本次任务执行步骤过多，已达到最大工具调用次数。"
+                    "请尝试拆分问题后重新提问。"
+                )
+                break
+
+            # 保存模型的工具调用消息
+            messages.append({
+                "role": "assistant",
+                "content": raw_response,
+                "tool_calls": tool_calls,
+            })
+
+            # 8. 执行本轮所有工具调用
+            for tool_call in tool_calls:
+
+                tool_name = "unknown"
+                function_data = tool_call.get("function", {})
+                if not isinstance(function_data, dict):
+                    tool_result = "工具调用格式错误。"
 
                 else:
-                    tool_args = tool_call.get("arguments", {})
+                    tool_name = function_data.get("name")
+                    tool_args = function_data.get("arguments", {})
+
+                    if isinstance(tool_args, str):
+                        try:
+                            tool_args = json.loads(tool_args)
+                        except json.JSONDecodeError:
+                            tool_args = None
 
                     if not isinstance(tool_args, dict):
-                        answer = "工具参数格式不正确，未执行任何操作。"
+                        tool_result = "工具参数格式错误，无法执行。"
 
-                    else:
-                        title = tool_args.get("title")
-                        content = tool_args.get("content")
+                    elif tool_name not in {
+                        "search_articles",
+                        "get_article_detail",
+                        "create_article",
+                    }:
+                        tool_result = "不支持该工具，未执行任何操作。"
 
-                        if (
-                            not isinstance(title, str)
-                            or not title.strip()
-                            or len(title.strip()) > 200
-                            or not isinstance(content, str)
-                            or not content.strip()
-                        ):
-                            answer = "文章标题或正文无效，未执行创建操作。"
+                    elif tool_name == "create_article":
 
-                        elif not is_explicit_create_request(question):
-                            # 用户没有明确要求创建并保存时，拒绝工具调用
-                            answer = (
-                                "本次请求未明确要求创建文章，因此没有执行创建操作。"
+                        # 再次检查用户是否明确要求创建文章
+                        if not explicit_create:
+                            tool_result = (
+                                "用户没有明确要求创建并保存文章，"
+                                "因此拒绝创建操作。"
                             )
 
                         else:
-                            print("AI 提出了创建文章请求，等待用户确认。")
+                            title = tool_args.get("title")
+                            content = tool_args.get("content")
 
-                            confirmation_id = self.create_pending_confirmation(
-                                title=title.strip(),
-                                content=content.strip(),
-                                user_id=user_id,
-                            )
+                            if (
+                                not isinstance(title, str)
+                                or not title.strip()
+                                or len(title.strip()) > 200
+                                or not isinstance(content, str)
+                                or not content.strip()
+                            ):
+                                tool_result = "文章标题或正文无效，未创建待确认请求。"
 
-                            answer = (
-                                "AI 已生成一篇待确认的文章，尚未创建到数据库。\n"
-                                f"标题：{title.strip()}\n"
-                                f"确认编号：{confirmation_id}\n"
-                                "请先检查文章内容，再通过确认接口决定是否创建。"
-                            )
+                            else:
+                                confirmation_id = self.create_pending_confirmation(
+                                    title=title.strip(),
+                                    content=content.strip(),
+                                    user_id=user_id,
+                                )
 
-                            tool_used = True
+                                pending_confirmation = {
+                                    "confirmation_id": confirmation_id,
+                                    "title": title.strip(),
+                                    "content": content.strip(),
+                                }
 
-                            pending_confirmation = {
-                                "confirmation_id": confirmation_id,
-                                "title": title.strip(),
-                                "content": content.strip(),
-                            }
+                                tool_result = (
+                                    "文章内容已生成待确认请求，尚未保存到数据库。"
+                                    f"\n标题：{title.strip()}"
+                                    f"\n确认编号：{confirmation_id}"
+                                    "\n请等待用户检查并确认。"
+                                )
 
-        except json.JSONDecodeError:
-            # 大模型返回的不是 JSON，按普通回答处理
-            pass
+                        tool_used = True
 
-        # 9. 存入对话记忆
-        with self._state_lock:
-            self.chat_history[session_id].append(
-                {
-                    "role": "user",
-                    "content": question,
-                }
+                    else:
+                        logger.info(
+                            "Agent 正在执行工具：%s，参数：%s",
+                            tool_name,
+                            tool_args,
+                        )
+
+                        tool_result = self.execute_tool(
+                            tool_name,
+                            tool_args,
+                            user_id=user_id,
+                        )
+
+                    tool_used = True
+
+                # 记录工具执行错误
+                if (
+                    isinstance(tool_result, str)
+                    and tool_result.startswith(("搜索失败：", "查询失败："))
+                ):
+                    tool_errors.append(tool_result)
+
+                # 提取搜索结果中的文章信息，统一来源格式并去重
+                if (
+                    tool_name == "search_articles"
+                    and isinstance(tool_result, dict)
+                ):
+                    for item in tool_result.get("results", []):
+                        if not isinstance(item, dict):
+                            continue
+
+                        article_id = item.get("article_id")
+
+                        if article_id is None:
+                            continue
+
+                        # 同时检查新旧两种字段，避免重复添加
+                        exists = any(
+                            source.get("article_id", source.get("id")) == article_id
+                            for source in source_details
+                        )
+
+                        if not exists:
+                            source_details.append({
+                                "article_id": article_id,
+                                "title": f"文章 {article_id}",
+                                "url": f"/articles/{article_id}",
+                            })
+
+                # 将工具结果转换为 JSON 字符串，再返回给模型
+                if isinstance(tool_result, (dict, list)):
+                    tool_content = json.dumps(
+                        tool_result,
+                        ensure_ascii=False,
+                    )
+                else:
+                    tool_content = str(tool_result)
+
+                messages.append({
+                    "role": "tool",
+                    "name": tool_name,
+                    "content": tool_content,
+                })
+
+        # 9. 整理最终回答
+        answer = raw_response.strip()
+
+        if not answer:
+            answer = "本次任务没有生成有效回答，请重新尝试。"
+
+        # 如果创建文章已生成待确认请求，明确展示确认信息
+        if pending_confirmation is not None:
+            answer = (
+                "AI 已生成一篇待确认的文章，尚未创建到数据库。\n"
+                f"标题：{pending_confirmation['title']}\n"
+                f"确认编号：{pending_confirmation['confirmation_id']}\n"
+                "请先检查文章内容，再通过确认接口决定是否创建。"
             )
 
-            self.chat_history[session_id].append(
-                {
-                    "role": "assistant",
-                    "content": answer,
-                }
+        # 10. 保存对话历史
+        with self._state_lock:
+            self.chat_history[session_id].append({
+                "role": "user",
+                "content": question,
+            })
+
+            self.chat_history[session_id].append({
+                "role": "assistant",
+                "content": answer,
+            })
+
+            self.chat_history[session_id] = (
+                self.chat_history[session_id][-10:]
             )
 
-        # 最多保留最近 10 条消息
-        with self._state_lock:
-            self.chat_history[session_id] = self.chat_history[session_id][-10:]
-
-        # 10. 根据实际参与上下文的文章筛选来源
+        # 11. 筛选最终来源
         final_sources = []
 
         if (
             "暂无相关信息" not in answer
             and "抱歉" not in answer
-            and not tool_used
         ):
-            context_article_ids = {
-                source["article_id"]
-                for source in source_details
-            }
+            if tool_used:
+                # Agent 使用工具时，保留工具搜索到的来源
+                final_sources = source_details.copy()
 
-            retrieved_article_ids = {
-                item.get("article_id")
-                for item in search_results
-                if item.get("article_id") is not None
-            }
+            else:
+                # 普通 RAG 问答沿用原来的来源匹配逻辑
+                context_article_ids = {
+                    source["article_id"]
+                    for source in source_details
+                }
 
-            matched_article_ids = (
-                context_article_ids & retrieved_article_ids
-            )
+                retrieved_article_ids = {
+                    item.get("article_id")
+                    for item in search_results
+                    if item.get("article_id") is not None
+                }
 
-            final_sources = [
-                source
-                for source in source_details
-                if source["article_id"] in matched_article_ids
-            ]
+                matched_article_ids = (
+                    context_article_ids & retrieved_article_ids
+                )
 
-        # 11. 组装返回结果
+                final_sources = [
+                    source
+                    for source in source_details
+                    if source["article_id"] in matched_article_ids
+                ]
+
+        # 12. 返回结果
         result = {
             "answer": answer,
             "sources": final_sources,
@@ -656,7 +914,11 @@ class RAGEngine:
         if pending_confirmation is not None:
             result["pending_confirmation"] = pending_confirmation
 
+        if tool_errors:
+            result["tool_errors"] = tool_errors
+
         return result
+
 
 
 # 全局引擎实例

@@ -98,9 +98,11 @@ def test_readonly_question_does_not_execute_create_article():
         )
 
         # 核心安全断言：绝不能执行创建工具
-        mock_execute_tool.assert_not_called()
-
-        assert "没有执行创建操作" in result["answer"]
+        # 允许搜索知识库，但绝不能执行创建文章工具
+        assert not any(
+            call.args[0] == "create_article"
+            for call in mock_execute_tool.call_args_list
+        )
 
 
 def test_explicit_create_request_can_reach_tool():
@@ -304,8 +306,27 @@ def test_explicit_create_request_requires_confirmation():
             return_value=search_results,
         ),
         patch(
-            "rag.llm_client.ollama_client.generate",
-            return_value=fake_tool_response,
+            "rag.llm_client.ollama_client.chat",
+            side_effect=[
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "create_article",
+                                "arguments": {
+                                    "title": "Python 基础知识",
+                                    "content": "Python 是一种常用的编程语言。",
+                                },
+                            }
+                        }
+                    ],
+                },
+                {
+                    "content": "文章已经生成，等待用户确认。",
+                    "tool_calls": [],
+                },
+            ],
         ),
         patch("database.SessionLocal") as mock_session_local,
     ):
@@ -540,12 +561,30 @@ def test_explicit_create_request_works_without_search_results(monkeypatch):
     )
 
     # 模拟大模型生成创建文章的工具调用
+    responses = iter([
+        {
+            "content": "",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "create_article",
+                        "arguments": {
+                            "title": "测试文章",
+                            "content": "这是一篇测试文章内容。",
+                        },
+                    }
+                }
+            ],
+        },
+        {
+            "content": "文章已经生成，等待用户确认。",
+            "tool_calls": [],
+        },
+    ])
+
     monkeypatch.setattr(
-        "rag.llm_client.ollama_client.generate",
-        lambda prompt: (
-            '{"tool_call": {"name": "create_article", '
-            '"arguments": {"title": "测试文章", "content": "这是一篇测试文章内容。"}}}'
-        ),
+        "rag.llm_client.ollama_client.chat",
+        lambda *args, **kwargs: next(responses),
     )
 
     result = engine.ask(
