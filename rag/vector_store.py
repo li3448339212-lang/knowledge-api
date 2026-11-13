@@ -271,9 +271,6 @@ class ChromaVectorStore:
             where=permission_filter,
             include=["documents", "metadatas"]
         )
-
-        vector_documents = vector_results["documents"][0] or []
-        vector_metadatas = vector_results["metadatas"][0] or []
         vector_ids = vector_results["ids"][0] or []
 
         # 3. 获取有权限的全部文本块，供 BM25 检索

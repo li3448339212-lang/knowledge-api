@@ -29,3 +29,16 @@ Thumbs.db
 
 # Local vector database
 /chroma_db/
+
+# SQLite database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Python packaging
+dist/
+build/
+*.egg-info/
+
+# Coverage reports
+htmlcov/
