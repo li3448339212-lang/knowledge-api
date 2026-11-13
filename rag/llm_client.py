@@ -1,4 +1,4 @@
-
+import os
 import requests
 from typing import Optional
 
@@ -8,16 +8,18 @@ class OllamaClient:
     本地 Ollama 大模型客户端
     负责普通文本生成和原生工具调用。
     """
-
     def __init__(
         self,
         model_name: str = "qwen2.5:7b",
-        base_url: str = "http://localhost:11434",
+        base_url: str | None = None,
     ):
         self.model_name = model_name
-        self.base_url = base_url
-        self.generate_url = f"{base_url}/api/generate"
-        self.chat_url = f"{base_url}/api/chat"
+        self.base_url = (
+            base_url
+            or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        ).rstrip("/")
+        self.generate_url = f"{self.base_url}/api/generate"
+        self.chat_url = f"{self.base_url}/api/chat"
 
     def generate(
         self,

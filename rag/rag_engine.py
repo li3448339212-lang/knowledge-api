@@ -39,14 +39,37 @@ def is_explicit_create_request(question: str) -> bool:
 
     create_words = [
         "创建文章",
+        "创建一篇文章",
+        "创建一篇",
         "新建文章",
+        "新建一篇文章",
+        "新建一篇",
         "撰写文章",
         "写一篇文章",
         "写文章",
         "帮我写",
         "帮我创建",
+        "帮我新建",
+        "请创建",
+        "请新建",
         "创建并保存",
     ]
+
+    # 用户只是在询问创建方法，不代表要求实际创建文章
+    informational_patterns = [
+        "介绍一下如何创建",
+        "介绍如何创建",
+        "讲解如何创建",
+        "如何创建文章",
+        "怎么创建文章",
+        "怎样创建文章",
+        "如何新建文章",
+        "怎么新建文章",
+        "怎样新建文章",
+    ]
+
+    if any(word in question for word in informational_patterns):
+        return False
 
     # 明确禁止操作时，优先阻止创建
     if any(word in question for word in forbidden_words):
@@ -622,7 +645,7 @@ class RAGEngine:
     1. 普通知识库问题优先使用参考资料回答。
     2. 参考资料不足时，可以调用 search_articles 搜索知识库。
     3. 用户要求读取指定文章时，可以调用 get_article_detail。
-    4. 用户明确要求创建并保存文章时，才可以调用 create_article。
+    4. 用户明确要求创建并保存文章时，必须立即调用 create_article 工具生成待确认请求，不得只用自然语言询问用户是否确认。
     5. 搜索、查询、阅读、总结已有文章时，禁止调用 create_article。
     6. 用户意图不明确时，不得创建文章。
     7. 不得编造文章内容、标题或搜索结果。
@@ -836,7 +859,7 @@ class RAGEngine:
 
                 messages.append({
                     "role": "tool",
-                    "name": tool_name,
+                    "tool_name": tool_name,
                     "content": tool_content,
                 })
 
